@@ -2,6 +2,8 @@
 
 ## v0.2.0 — 2026-09-28
 First public release.
+- **Download:** `sk8trainer-0.2.0-windows-x86_64.zip`, the v0.1.6 engine with
+  SK8TRAINER built in. Other platforms build from source (see INSTALL.md).
 - The entry table is built at runtime from the player's own `db.big` (EB BIG v3
   + RefPack + AttribSys schema). Nothing game-derived ships, and there's no
   Python step.

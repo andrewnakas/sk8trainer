@@ -13,6 +13,21 @@ for.
 > Ships no game code or data. The trainer reads `data/big/db.big` from the game
 > you installed, at runtime, on your device.
 
+## Download
+
+**[→ Latest release](https://github.com/andrewnakas/sk8trainer/releases/latest)**
+has step-by-step instructions in **[INSTALL.md](INSTALL.md)**.
+
+- **Windows:** download `sk8trainer-<version>-windows-x86_64.zip`, unzip,
+  run `skate3.exe`, and point it at your Skate 3 ISO and Title Update 3 on
+  first launch. Already have the engine? Just swap in the two files.
+- **Linux, Steam Deck, macOS, Android, iOS:** build
+  [SK8-Engine](https://github.com/andrewnakas/SK8-Engine) with the trainer
+  switched on ([how](INSTALL.md#linux-steam-deck-macos-android-ios)).
+- **Your own recomp fork:** see [INTEGRATION.md](INTEGRATION.md).
+
+You need your own Skate 3 (Xbox 360) disc image and Title Update 3.
+
 ## Controls
 
 | | Keyboard | Controller | Touch |
