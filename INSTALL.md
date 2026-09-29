@@ -110,6 +110,7 @@ slot · **Delete** half speed.
 | `skate3_trainer` | `true` | Turns the whole trainer on or off |
 | `skate3_trainer_button` | `false` desktop / `true` mobile | Shows the on-screen **SK8** button |
 | `skate3_trainer_apply_saved` | `true` | Re-applies your saved values at launch |
+| `skate3_trainer_selftest` | `false` | In gameplay, tests every feature and writes `trainer selftest:` lines to the log (then restores stock) |
 
 Your values are saved in `<user data>/trainer/user.toml`. On Windows that's
 `%APPDATA%\skate3\trainer\user.toml`.
@@ -119,8 +120,8 @@ Your values are saved in `<user data>/trainer/user.toml`. On Windows that's
 | Symptom | Fix |
 |---|---|
 | Insert does nothing | Click the game window so it has focus. On laptops, Insert is often **Fn + Ins**. The controller chord always works. |
-| Status line orange: "db.big not found" | The game isn't installed where the engine expects it. Relaunch and point it at your ISO again. |
-| Status line orange: "vault not in guest memory yet" | Normal for a few seconds at boot. If it stays orange in a skate session, open an issue with the newest file from `logs/`. |
+| Status line orange: "db.big not found; looked in: …" | Fixed in v0.2.1; update first. If it still appears, the message lists every folder tried. Add `game_data_root = "<folder with default.xex>"` to `skate3.toml` beside the exe, and please open an issue with that message. |
+| Status line orange: "vault not in guest memory yet" | Normal for a few seconds at boot. If it stays orange in a skate session, run once with `--skate3_trainer_selftest=true` and attach the newest file from `logs/` to an issue. |
 | A value changes nothing in game | Some values are only read at certain moments, such as a new session or the next bail. Try a session marker or a restart. Please report which one. |
 | Black screen in fullscreen (systems with several display adapters or virtual monitors) | Add `fullscreen = false` to `skate3.toml` beside the exe. |
 | Marker "Go" does nothing | The game only allows a marker return in free skate, not in some challenges. The Practice tab shows "return blocked" when that's the case. |

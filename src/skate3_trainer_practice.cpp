@@ -27,6 +27,8 @@
 #include "generated/skate3_init.h"
 
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 
 namespace skate3::trainer::practice {
 namespace {
@@ -71,6 +73,8 @@ float g_speed = 1.0f;
 float g_applied_speed = 1.0f;
 uint32_t g_timer = 0;
 int32_t g_requested_hz = 60;
+int g_timer_hz_live = 0;
+uint64_t g_marker_updates = 0;
 
 // Set only while the game's own marker update runs, so forced actions never
 // leak into any other input query.
@@ -78,6 +82,22 @@ thread_local bool t_in_marker_update = false;
 
 int EffectiveHz(int32_t requested) {
   return std::max(1, static_cast<int>(std::lround(requested * g_speed)));
+}
+
+// True when [addr, addr+size) is committed, readable guest memory. Pointers
+// read from the game early in boot can be stale or not yet set up.
+bool GuestReadable(uint32_t addr, uint32_t size) {
+  // The loaded XEX image (code + .data/.rdata) is always mapped.
+  constexpr uint32_t kImageBase = 0x82000000, kImageEnd = 0x831B0000;
+  if (addr >= kImageBase && uint64_t(addr) + size <= kImageEnd) return true;
+  auto* memory = rex::system::kernel_memory();
+  if (!memory || !addr) return false;
+  auto* heap = memory->LookupHeap(addr);
+  rex::memory::HeapAllocationInfo info{};
+  if (!heap || !heap->QueryRegionInfo(addr, &info)) return false;
+  return (info.state & rex::memory::kMemoryAllocationCommit) &&
+         (info.protect & rex::memory::kMemoryProtectRead) &&
+         uint64_t(addr) + size <= uint64_t(info.base_address) + info.region_size;
 }
 
 uint32_t CallIndirect(PPCContext ctx, uint8_t* base, uint32_t target) {
@@ -118,21 +138,22 @@ int32_t LocalPlayerState(PPCContext& ctx, uint8_t* base, uint32_t self) {
   call.r3.u64 = REX_LOAD_U32(self + 4);
   sub_82897730(call, base);
   const uint32_t actor = call.r3.u32;
-  if (!actor) return -1;
+  if (!GuestReadable(actor + 44, 4)) return -1;
   const uint32_t iface = actor + 44;
   const uint32_t vtable = REX_LOAD_U32(iface);
-  if (!vtable) return -1;
+  if (vtable < 0x82000000 || vtable >= 0x831B0000) return -1;
   call.r3.u64 = iface;
   const uint32_t bundle = CallIndirect(call, base, REX_LOAD_U32(vtable + 20));
-  if (!bundle) return -1;
+  if (!GuestReadable(bundle + 28, 4)) return -1;
   const uint32_t state = REX_LOAD_U32(bundle + 28);
-  return state ? static_cast<int32_t>(REX_LOAD_U32(state + 16)) : -1;
+  return GuestReadable(state + 16, 4) ? static_cast<int32_t>(REX_LOAD_U32(state + 16)) : -1;
 }
 
 // Runs on the game thread just before the game's own marker update.
 void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t marker) {
   std::lock_guard lock(g_mutex);
   g_status.marker_seen = true;
+  ++g_marker_updates;
   g_status.game_marker_set = REX_LOAD_U8(marker + kMarkerHas) != 0;
   g_status.use_gate = REX_LOAD_U8(marker + kMarkerUseGate) != 0;
 
@@ -240,6 +261,17 @@ void Clear(int slot) {
   std::lock_guard lock(g_mutex);
   g_slots[std::clamp(slot, 0, kSlots - 1)] = SlotData{};
 }
+void DebugOffsetSlot(int slot, float dx) {
+  std::lock_guard lock(g_mutex);
+  auto& s = g_slots[std::clamp(slot, 0, kSlots - 1)];
+  if (!s.valid) return;
+  const float x = Be32f(&s.xform[48]) + dx;
+  uint32_t v;
+  std::memcpy(&v, &x, 4);
+  s.xform[48] = uint8_t(v >> 24), s.xform[49] = uint8_t(v >> 16), s.xform[50] = uint8_t(v >> 8),
+  s.xform[51] = uint8_t(v);
+}
+
 SlotInfo Slot(int slot) {
   std::lock_guard lock(g_mutex);
   const auto& s = g_slots[std::clamp(slot, 0, kSlots - 1)];
@@ -287,11 +319,49 @@ Status GetStatus() {
   Status s = g_status;
   s.requested_hz = g_requested_hz;
   s.sim_hz = g_timer ? EffectiveHz(g_requested_hz) : 0;
+  s.timer_hz_live = g_timer_hz_live;
+  s.marker_updates = g_marker_updates;
   return s;
+}
+
+// The sim timer is also reachable without waiting for the game to change its
+// rate: [[0x83083BCC]+16], whose vtable slot 52 is sub_82966910.
+uint32_t FindTimer(uint8_t* base) {
+  const uint32_t root = REX_LOAD_U32(0x83083BCC);
+  if (!GuestReadable(root + 16, 4)) return 0;
+  const uint32_t timer = REX_LOAD_U32(root + 16);
+  if (!GuestReadable(timer, 40)) return 0;
+  const uint32_t vtable = REX_LOAD_U32(timer);
+  if (vtable < 0x82000000 || vtable >= 0x831B0000 || !GuestReadable(vtable + 52, 4)) return 0;
+  return REX_LOAD_U32(vtable + 52) == 0x82966910 ? timer : 0;
 }
 
 void Tick(uint8_t* base) {
   std::lock_guard lock(g_mutex);
+  // Only once gameplay runs (the marker update has been seen): the global is
+  // not a valid pointer during early boot.
+  if (!g_timer && g_status.marker_seen) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      const uint32_t root = REX_LOAD_U32(0x83083BCC);
+      const bool r16 = GuestReadable(root + 16, 4);
+      const uint32_t timer = r16 ? REX_LOAD_U32(root + 16) : 0;
+      const bool rt = GuestReadable(timer, 40);
+      const uint32_t vt = rt ? REX_LOAD_U32(timer) : 0;
+      const uint32_t fn = GuestReadable(vt + 52, 4) ? REX_LOAD_U32(vt + 52) : 0;
+      REXLOG_INFO("trainer: timer chain root={:08X} ok={} timer={:08X} ok={} vtable={:08X} slot52={:08X} hz={}",
+                  root, r16, timer, rt, vt, fn, rt ? REX_LOAD_U32(timer + 32) : 0);
+    }
+    if (const uint32_t timer = FindTimer(base)) {
+      g_timer = timer;
+      g_requested_hz = static_cast<int32_t>(REX_LOAD_U32(timer + 32));
+      if (g_requested_hz <= 0) g_requested_hz = 60;
+      g_applied_speed = 1.0f;  // whatever is live now is the game's own rate
+      REXLOG_INFO("trainer: sim timer at 0x{:08X}, {} Hz", timer, g_requested_hz);
+    }
+  }
+  if (g_timer) g_timer_hz_live = static_cast<int>(REX_LOAD_U32(g_timer + 32));
   if (!g_timer || g_speed == g_applied_speed) return;
   // Re-program the live timer the same way sub_82966910 does.
   const int hz = EffectiveHz(g_requested_hz);

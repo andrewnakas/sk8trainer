@@ -13,7 +13,7 @@ After the `skate3` target exists (after `add_executable` / `add_library`):
 ```cmake
 option(SKATE3_TRAINER "Build the SK8TRAINER in-game trainer" ON)
 set(SKATE3_TRAINER_DIR "" CACHE PATH "Local SK8TRAINER checkout (empty = fetch from GitHub)")
-set(SKATE3_TRAINER_TAG "v0.2.0" CACHE STRING "SK8TRAINER git tag to fetch")
+set(SKATE3_TRAINER_TAG "v0.2.1" CACHE STRING "SK8TRAINER git tag to fetch")
 if(SKATE3_TRAINER)
     if(NOT SKATE3_TRAINER_DIR)
         include(FetchContent)
@@ -75,8 +75,10 @@ skater:
 
 ```cpp
 #if defined(SKATE3_TRAINER)
+  // Use the runtime's folders: the app's own game_data_root() is the
+  // pre-install default and is empty unless configured.
   skate3::trainer::Configure(
-      {game_data_root(), update_data_root(), user_data_root()},
+      {runtime()->game_data_root(), runtime()->update_data_root(), runtime()->user_data_root()},
       static_cast<rex::input::InputSystem*>(runtime()->input_system()));
 #endif
   // ...inside SetActiveCallback's lambda:

@@ -23,6 +23,8 @@ struct Status {
   int32_t player_state = -1;    // local skater physics state id (300 = ground bail)
   int sim_hz = 0;               // effective sim tick frequency
   int requested_hz = 0;         // what the game asked for
+  int timer_hz_live = 0;        // read back from the guest timer object
+  uint64_t marker_updates = 0;  // session-marker update calls (one per sim tick)
   bool restore_pending = false;
   std::string last_event;
 };
@@ -36,6 +38,7 @@ void SaveHere(int slot);            // set the game marker here and copy it to s
 void CaptureGameMarker(int slot);   // copy the game's current marker to slot
 void GoTo(int slot);                // teleport through the game's own return path
 void Clear(int slot);
+void DebugOffsetSlot(int slot, float dx);  // self-test: move a saved slot along x
 SlotInfo Slot(int slot);
 int SelectedSlot();
 void SelectSlot(int slot);

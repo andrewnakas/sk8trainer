@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.2.1 — 2026-09-29
+Fixes for v0.2.0, all checked in game by the new unattended self-test.
+- **Fixed "db.big not found".** The trainer was given the app's
+  pre-install default game folder, which is empty unless configured, instead
+  of the folder the engine actually uses. It now gets the runtime's resolved
+  folders, falls back to `game/` beside the exe, in the working folder and in
+  user data, and lists every path it tried if it still fails.
+- **Fixed a crash about 2 s after boot.** The memory scan read committed
+  no-access guard pages (guest thread stacks). It now scans only read/write
+  guest memory.
+- **Fixed game speed doing nothing.** The game only sets its sim timer rate
+  on slow-motion requests, so the hook never saw the timer. The trainer now
+  finds it directly (`[[0x83083BCC]+16]`, checked against its vtable) once
+  gameplay runs. Measured: 0.5x takes the sim from 60 to 30 updates/s.
+- All game pointers the practice tools follow are checked against the
+  runtime heap table before being read.
+- New `skate3_trainer_selftest` setting. It exercises every feature in
+  gameplay and logs `trainer selftest:` lines with OK / CHECK / FAIL.
+
 ## v0.2.0 — 2026-09-28
 First public release.
 - **Download:** `sk8trainer-0.2.0-windows-x86_64.zip`, the v0.1.6 engine with

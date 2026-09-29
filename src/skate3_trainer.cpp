@@ -35,6 +35,9 @@ REXCVAR_DEFINE_BOOL(skate3_trainer, true, "Skate 3",
 #endif
 REXCVAR_DEFINE_BOOL(skate3_trainer_button, SK8TRAINER_TOUCH_DEFAULT, "Skate 3",
                     "Show a small SK8 button that opens the trainer (for touch screens)");
+REXCVAR_DEFINE_BOOL(skate3_trainer_selftest, false, "Skate 3",
+                    "SK8TRAINER self-test: once in gameplay, exercise every feature and log "
+                    "'trainer selftest:' lines (for unattended checks; restores stock after)");
 REXCVAR_DEFINE_BOOL(skate3_trainer_apply_saved, true, "Skate 3",
                     "Re-apply the saved trainer values (<user data>/trainer/user.toml) whenever the vault is found");
 
@@ -145,16 +148,27 @@ void WriteEntry(const Entry& e, uint8_t* blob, double v) {
 void LoadTable() {
   vault::Table table;
   std::filesystem::path used;
-  for (const auto& root : {g_paths.update_data_root, g_paths.game_data_root}) {
-    std::error_code ec;
-    if (root.empty() || !std::filesystem::exists(root / "data" / "big" / "db.big", ec)) continue;
+  // The recomp resolves the real game folder late (after config, installers
+  // and working-directory checks), so besides the configured roots try the
+  // places the engine itself falls back to.
+  std::vector<std::filesystem::path> roots = {g_paths.update_data_root, g_paths.game_data_root};
+  std::error_code ec;
+  roots.push_back(rex::filesystem::GetExecutableFolder() / "game");
+  roots.push_back(std::filesystem::current_path(ec) / "game");
+  if (!g_paths.user_data_root.empty()) roots.push_back(g_paths.user_data_root / "game");
+  std::string tried;
+  for (const auto& root : roots) {
+    if (root.empty()) continue;
+    const auto big = root / "data" / "big" / "db.big";
+    tried += "\n  " + big.string();
+    if (!std::filesystem::exists(big, ec)) continue;
     table = vault::BuildFromGame(root);
     used = root;
     if (table.error.empty()) break;
   }
   std::lock_guard lock(g_mutex);
   if (used.empty()) {
-    g_table_error = "db.big not found under the game data folder";
+    g_table_error = "db.big not found; looked in:" + tried;
   } else if (!table.error.empty()) {
     g_table_error = "vault read failed: " + table.error;
   }
@@ -244,7 +258,11 @@ void ScanThread(uint8_t* base) {
       continue;
     }
     const uint64_t next = uint64_t(info.base_address) + info.region_size;
-    if (info.state & rex::memory::kMemoryAllocationCommit) {
+    // Committed is not enough: thread stacks carry committed no-access guard
+    // pages, and touching one faults. The vault is plain read/write heap data.
+    constexpr uint32_t kReadWrite = rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite;
+    if ((info.state & rex::memory::kMemoryAllocationCommit) &&
+        (info.protect & kReadWrite) == kReadWrite) {
       uint8_t* region = memory->TranslateVirtual<uint8_t*>(info.base_address);
       uint8_t* region_end = region + info.region_size;
       for (auto it = region;; ++it) {
@@ -574,6 +592,103 @@ void DrawPracticeLocked(int pad_row) {
   if (!st.last_event.empty()) ImGui::Text("%s", st.last_event.c_str());
 }
 
+// Unattended check, driven from Tick once the vault is found and gameplay
+// (the session-marker update) is running. Every step logs one line.
+void SelfTest() {
+  namespace pr = practice;
+  using clock = std::chrono::steady_clock;
+  static int step = 0;
+  static clock::time_point at;
+  static uint64_t updates_at = 0;
+  static double rate_normal = 0;
+  const auto now = clock::now();
+  const double waited = std::chrono::duration<double>(now - at).count();
+  const pr::Status st = pr::GetStatus();
+  auto next = [&](int n) {
+    step = n;
+    at = now;
+    updates_at = st.marker_updates;
+  };
+  auto find = [](const char* source) -> Entry* {
+    for (Entry& e : g_entries) {
+      if (e.source == source) return &e;
+    }
+    return nullptr;
+  };
+  switch (step) {
+    case 0:
+      if (g_blob.load() && st.marker_seen) {
+        REXLOG_INFO("trainer selftest: start - {} | {} entries", g_status, g_entries.size());
+        next(1);
+      }
+      break;
+    case 1:  // live edit + readback
+      if (waited < 3) break;
+      if (Entry* e = find("physics_mode/normal/JumpMaxHeight")) {
+        std::lock_guard lock(g_mutex);
+        const double before = ReadEntry(*e, g_blob.load());
+        WriteEntry(*e, g_blob.load(), e->stock * 3);
+        const double after = ReadEntry(*e, g_blob.load());
+        REXLOG_INFO("trainer selftest: edit JumpMaxHeight[normal] {:.3f} -> {:.3f} (stock {:.3f}) {}",
+                    before, after, e->stock,
+                    std::fabs(after - e->stock * 3) < 1e-3 ? "OK" : "FAIL");
+        WriteEntry(*e, g_blob.load(), e->stock);
+      } else {
+        REXLOG_INFO("trainer selftest: edit FAIL (JumpMaxHeight[normal] not in table)");
+      }
+      next(2);
+      break;
+    case 2:  // update rate at normal speed
+      if (waited < 4) break;
+      rate_normal = (st.marker_updates - updates_at) / waited;
+      REXLOG_INFO("trainer selftest: speed 1.00 -> marker updates {:.1f}/s, timer {} Hz (game asked {})",
+                  rate_normal, st.timer_hz_live, st.requested_hz);
+      pr::SetGameSpeed(0.5f);
+      next(3);
+      break;
+    case 3:  // update rate at half speed
+      if (waited < 4) break;
+      {
+        const double rate = (st.marker_updates - updates_at) / waited;
+        REXLOG_INFO("trainer selftest: speed 0.50 -> marker updates {:.1f}/s, timer {} Hz ({:.0f}% of normal) {}",
+                    rate, st.timer_hz_live, rate_normal > 0 ? 100 * rate / rate_normal : 0.0,
+                    st.timer_hz_live == 30 && rate < rate_normal * 0.75 ? "OK" : "CHECK");
+      }
+      pr::SetGameSpeed(1.0f);
+      pr::SetAutoReturn(true, 1.0f);  // exercises the local-player state read
+      pr::SaveHere(0);
+      next(4);
+      break;
+    case 4:  // marker slot save
+      if (waited < 2) break;
+      {
+        const pr::SlotInfo slot = pr::Slot(0);
+        REXLOG_INFO("trainer selftest: save slot 1 -> {} valid={} pos=({:.2f}, {:.2f}, {:.2f}) | state {} | return {} {}",
+                    st.last_event, slot.valid, slot.x, slot.y, slot.z, st.player_state,
+                    st.use_gate ? "allowed" : "blocked", slot.valid ? "OK" : "FAIL");
+      }
+      pr::DebugOffsetSlot(0, 4.0f);  // returning to where you stand is a no-op
+      pr::GoTo(0);
+      next(5);
+      break;
+    case 5:  // go to slot
+      if (waited < 5) break;
+      REXLOG_INFO("trainer selftest: go slot 1 -> '{}' pending={} {}", st.last_event,
+                  st.restore_pending,
+                  st.last_event.find("going to slot") != std::string::npos &&
+                          st.last_event.find("timed out") == std::string::npos
+                      ? "OK"
+                      : "CHECK");
+      pr::SetAutoReturn(false, 1.0f);
+      pr::Clear(0);
+      REXLOG_INFO("trainer selftest: done (stock values restored)");
+      next(6);
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 // ================================================================ public
@@ -644,6 +759,7 @@ void Tick(uint8_t* base) {
     }
   }
   practice::Tick(base);
+  if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
 }
 
 TrainerDialog::TrainerDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}

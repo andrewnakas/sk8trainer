@@ -87,9 +87,10 @@ builds for: Windows, Linux and Steam Deck, macOS, Android and iOS.
   include plus a few `#if defined(SKATE3_TRAINER)` lines. The CMake snippet can
   fetch this repo by tag, so there's nothing to vendor.
 
-Platform status for v0.2.0:
-- **Windows x64:** built and played. Values are found at boot (81/81 stock
-  values match).
+Platform status:
+- **Windows x64:** built and checked in game with the self-test: the vault is
+  found (81/81 stock values), a live edit reads back, 0.5x speed halves the
+  sim rate (60 → 30 updates/s), and marker save and go both work.
 - **Linux, Steam Deck, macOS, Android, iOS:** the code only uses the runtime's
   portable APIs: the guest heap table for memory, the runtime input system for
   the pad, and ImGui. It has not been built on those platforms yet. Please open
