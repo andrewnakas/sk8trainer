@@ -63,9 +63,11 @@ SK8TRAINER is a source module for rexglue Skate 3 recompilations. You add it
 when you build the recomp. The same module covers every platform the recomp
 builds for: Windows, Linux and Steam Deck, macOS, Android and iOS.
 
-- **[andrewnakas/skate3recomp](https://github.com/andrewnakas/skate3recomp)**:
-  the integration is on the `sk8trainer` branch (see its PR). It's on by
-  default; `-DSKATE3_TRAINER=OFF` turns it off.
+- **[andrewnakas/SK8-Engine](https://github.com/andrewnakas/SK8-Engine)**
+  (formerly skate3recomp): the integration is on the `sk8trainer` branch,
+  [PR #1](https://github.com/andrewnakas/SK8-Engine/pull/1). Once it's merged,
+  every build made from that source includes the trainer (on by default;
+  `-DSKATE3_TRAINER=OFF` turns it off).
 - **Any other fork:** follow [INTEGRATION.md](INTEGRATION.md). It's one CMake
   include plus a few `#if defined(SKATE3_TRAINER)` lines. The CMake snippet can
   fetch this repo by tag, so there's nothing to vendor.

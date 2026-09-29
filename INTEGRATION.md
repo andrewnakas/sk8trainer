@@ -1,7 +1,8 @@
 # Adding SK8TRAINER to a Skate 3 recomp
 
-This works for any rexglue-based Skate 3 recompilation: the main
-`skate3recomp`, its Android and iOS builds, or your own fork. There are four
+This works for any rexglue-based Skate 3 recompilation:
+[SK8-Engine](https://github.com/andrewnakas/SK8-Engine) (formerly
+skate3recomp), its Android and iOS builds, or your own fork. There are four
 steps. Each code change is behind `#if defined(SKATE3_TRAINER)`, so building
 with `-DSKATE3_TRAINER=OFF` gives back the untouched game.
 
@@ -34,7 +35,7 @@ endif()
 `sk8trainer_add` adds the three `.cpp` files and the include path, and defines
 `SKATE3_TRAINER=1`. The trainer sources include `"generated/skate3_init.h"`, so
 the recomp's root folder must already be on the target's include path, as it is
-in `skate3recomp`. For offline builds, pass
+in SK8-Engine. For offline builds, pass
 `-DSKATE3_TRAINER_DIR=<checkout>`.
 
 ## 2. App class: dialog, binds, configuration
@@ -136,7 +137,7 @@ body into your existing one, calling the matching trainer logic.
 
 ## Which game build
 
-The addresses above are for the Xbox 360 retail XEX that `skate3recomp`
+The addresses above are for the Xbox 360 retail XEX that SK8-Engine
 lifts, with the title update applied. The physics values don't depend on
 addresses at all (they're found by signature in your own `db.big`). If your
 recomp lifts a different XEX, only the three practice hooks need new addresses.
