@@ -20,7 +20,10 @@ has step-by-step instructions in **[INSTALL.md](INSTALL.md)**.
 
 - **Windows:** download `sk8trainer-<version>-windows-x86_64.zip`, unzip,
   run `skate3.exe`, and point it at your Skate 3 ISO and Title Update 3 on
-  first launch. Already have the engine? Just swap in the two files.
+  first launch. Already have the engine, or the
+  [Skate3Recomp v2.0.2](https://github.com/mchughalex/skate3recomp/releases/tag/v2.0.2)
+  release? Just drag the two files over yours
+  ([how](INSTALL.md#add-it-to-skate3recomp-v202-drag-and-drop)).
 - **Linux, Steam Deck, macOS, Android, iOS:** build
   [SK8-Engine](https://github.com/andrewnakas/SK8-Engine) with the trainer
   switched on ([how](INSTALL.md#linux-steam-deck-macos-android-ios)).

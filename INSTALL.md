@@ -8,6 +8,7 @@ You need your own copy of **Skate 3 for Xbox 360** (a disc image / ISO) and
 | Your setup | What to download | Guide |
 |---|---|---|
 | Windows 10/11 x64 | `sk8trainer-<version>-windows-x86_64.zip` | [Windows](#windows) |
+| Playing **Skate3Recomp v2.0.2** (mchughalex) on Windows | same zip, drag in two files | [Drag and drop](#add-it-to-skate3recomp-v202-drag-and-drop) |
 | Already running the SK8-Engine / level-loader engine on Windows | same zip, swap two files | [Upgrade an existing install](#upgrade-an-existing-windows-install) |
 | Linux, Steam Deck, macOS | build from source | [Other platforms](#linux-steam-deck-macos-android-ios) |
 | Android, iOS | build from source (your usual app build) | [Other platforms](#linux-steam-deck-macos-android-ios) |
@@ -41,6 +42,31 @@ rexruntime.dll                  the recomp runtime
 dlc/                            optional converted map packs
 SK8TRAINER - READ ME.txt        quick start
 ```
+
+### Add it to Skate3Recomp v2.0.2 (drag and drop)
+Already playing the
+[Skate3Recomp v2.0.2](https://github.com/mchughalex/skate3recomp/releases/tag/v2.0.2)
+Windows release? You don't need to reinstall anything.
+
+1. Close the game.
+2. Open your `Skate3Recomp-Windows` folder (the one with `skate3.exe`,
+   `rexruntime.dll` and your `game` folder).
+3. **Back up** `skate3.exe` and `rexruntime.dll`, for example by renaming them to
+   `skate3.exe.bak` and `rexruntime.dll.bak`.
+4. From the SK8TRAINER zip, **drag `skate3.exe` and `rexruntime.dll` into that
+   folder** and choose *Replace*.
+5. Run `skate3.exe` as usual, then press **Insert** in game.
+
+Your installed game (`game\`), settings and saves are untouched. To undo it,
+delete the two new files and rename the `.bak` files back.
+
+Tested on a fresh v2.0.2 folder: every trainer check passed (values found
+81/81, live edit, 0.5x speed, marker save and go). The exe you drop in is
+SK8-Engine, which is v2.0.2 plus a few extras: an add-on picker for map packs in
+`dlc\` and a video preset row in the settings. Everything else plays the same.
+
+The Linux and macOS v2.0.2 zips can't take a Windows exe. For those, build
+from source (see below).
 
 ### Upgrade an existing Windows install
 Already have an engine folder from the level loader or an older SK8-Engine
