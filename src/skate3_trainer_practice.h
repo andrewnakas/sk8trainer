@@ -28,7 +28,8 @@ struct Status {
   uint8_t pad_lt = 0, pad_rt = 0;  // the triggers the game last read
   int bails_blocked = 0;        // bail transitions refused by Never bail
   int feet_kept = 0;            // airs in which a push button was ignored (feet stay on)
-  int rescues = 0;              // times Never bail stood the skater back up in place
+  int rescues = 0;              // times Never bail put the skater back to riding from a bail-out pose
+  int bounds_ignored = 0;       // out-of-bounds signals ignored
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
   bool have_position = false;   // the local skater's transform was read this tick
@@ -78,11 +79,15 @@ struct Measure {
 // state (300).
 void SetNeverBail(bool on);
 bool NeverBail();
-// With Never bail: when the game keeps demanding a bail anyway, respawn the
-// skater standing on the board where they are instead of bailing. Off by
-// default (the bail is then let through after 2 s).
-void SetStandUp(bool on);
-bool StandUp();
+// Skate / walk out of bounds: the "left the play area" respawn is not raised.
+void SetNoBounds(bool on);
+bool NoBounds();
+// With Never bail: when the game starts its bail-out "running" pose anyway,
+// put the skater straight back to riding where they are (the game's own
+// skater reset, aimed just ahead of them, speed handed back). Off = that bail
+// is let through after 2 s.
+void SetRecover(bool on);
+bool Recover();
 // With Never bail: ignore the push buttons (A / X) while airborne, so a foot
 // never comes off the board in the air (landing like that always bails). On
 // by default; turn off to do footplants.

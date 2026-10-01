@@ -839,16 +839,17 @@ void SaveOptions() {
   std::error_code ec;
   std::filesystem::create_directories(TrainerFolder(), ec);
   std::ofstream(OptionsPath()) << "never_bail=" << (practice::NeverBail() ? 1 : 0) << std::endl
-                               << "stand_up=" << (practice::StandUp() ? 1 : 0) << std::endl
-                               << "keep_feet_on=" << (practice::KeepFeetOn() ? 1 : 0) << std::endl;
+
+                               << "keep_feet_on=" << (practice::KeepFeetOn() ? 1 : 0) << std::endl
+                               << "recover=" << (practice::Recover() ? 1 : 0) << std::endl;
 }
 void LoadOptions() {
   std::ifstream in(OptionsPath());
   std::string line;
   while (std::getline(in, line)) {
     if (line.rfind("never_bail=", 0) == 0) practice::SetNeverBail(line.size() > 11 && line[11] == '1');
-    if (line.rfind("stand_up=", 0) == 0) practice::SetStandUp(line.size() > 9 && line[9] == '1');
     if (line.rfind("keep_feet_on=", 0) == 0) practice::SetKeepFeetOn(line.size() > 13 && line[13] == '1');
+    if (line.rfind("recover=", 0) == 0) practice::SetRecover(line.size() > 8 && line[8] == '1');
   }
 }
 
@@ -1096,15 +1097,16 @@ void DrawPracticeLocked(int pad_row) {
     bool never = pr::NeverBail();
     if (ImGui::Checkbox("NEVER BAIL", &never)) SetNeverBailLocked(never);
     ImGui::SameLine();
-    ImGui::TextDisabled("%d refused", pr::GetStatus().bails_blocked);
+    ImGui::TextDisabled("%d refused, %d bail-out poses undone", pr::GetStatus().bails_blocked,
+                        pr::GetStatus().rescues);
+    bool recover = pr::Recover();
+    if (ImGui::Checkbox("   never run on the board: snap straight back to riding (off = that bail goes through)", &recover)) {
+      pr::SetRecover(recover);
+      SaveOptions();
+    }
     bool feet = pr::KeepFeetOn();
     if (ImGui::Checkbox("   keep both feet on in the air (ignores A / X while airborne; off = footplants work)", &feet)) {
       pr::SetKeepFeetOn(feet);
-      SaveOptions();
-    }
-    bool stand = pr::StandUp();
-    if (ImGui::Checkbox("   respawn me standing right there if the game still insists on a bail", &stand)) {
-      pr::SetStandUp(stand);
       SaveOptions();
     }
   }
@@ -1734,7 +1736,6 @@ void SpinTest() {
 #define BAILY {"Wipeout_GroundBalanceTotal", false, 0}, {"Wipeout_GroundBalanceBase", false, 0}, {"Wipeout_GroundSkeletonMaxContact", false, 0}, {"Wipeout_AirSkeletonMaxContact", false, 0}, {"Wipeout_AirMaxSpeedIntoGround", false, 0}, {"Wipeout_AirMaxSpeedIntoStairs", false, 0}
   static const std::vector<Trial> trials = {
       {"X held in air then let go", 0, -1, 0, 0, 0x4000, {POP}},
-      {"plain ollie after", 0, 0, 0, 0, 0, {POP}},
       {"push, A held + LS right", 1, 0, 0, 0, 0x1000, {POP}},
       {"push, X held whole time", 0, -1, 0, 0, 0x4000, {POP}},
       {"plain ollie after (2)", 0, 0, 0, 0, 0, {POP}},
@@ -1787,6 +1788,7 @@ void SpinTest() {
       }
       if (trial > 0) pr::GoTo(0);
       pr::SetNeverBail(true);
+      pr::SetKeepFeetOn(std::strstr(trials[trial].name, "feet") != nullptr);
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
@@ -1829,92 +1831,52 @@ void SpinTest() {
   }
 }
 
-// Developer diagnostic (skate3_trainer_probe): every (0, -9.8, 0) vector in
-// read/write guest memory is a candidate for the live world gravity. Halve the
-// candidate set each scripted ollie, keeping the half that changes air time.
+// Developer diagnostic (skate3_trainer_probe): teleport far outside the map
+// twice, first with the bounds on, then with them off, and log what happens.
 void GravityProbe() {
   namespace pr = practice;
   static int step = 0;
   static uint64_t tick0 = 0;
-  static std::vector<uint8_t*> cands;
-  static size_t lo = 0, hi = 0, mid = 0;
-  static int base_air = -1;
-  static float base_rise = 0;
+  static float home[3] = {};
   const pr::Status st = pr::GetStatus();
   const uint64_t t = st.marker_updates - tick0;
-  uint8_t* gbase = g_base.load();
   auto next = [&](int n) {
     step = n;
     tick0 = st.marker_updates;
   };
-  auto write = [&](size_t a, size_t b, float v) {
-    for (size_t i = a; i < b; ++i) {
-      if (HostReadable(cands[i], 12)) StoreBEf(cands[i] + 4, v);
-    }
-  };
   switch (step) {
     case 0:
-      if (!g_blob.load() || !st.marker_seen || t < 240) break;
-      cands = FindAll({0, 0, 0, 0, 0xC1, 0x1C, 0xCC, 0xCD, 0, 0, 0, 0}, 4096);
-      hi = cands.size();
-      REXLOG_INFO("trainer probe: {} gravity-vector candidates", cands.size());
+      if (!g_blob.load() || !st.marker_seen || !st.have_position || t < 300) break;
+      home[0] = st.x, home[1] = st.y, home[2] = st.z;
       pr::SetAutoCapture(false);
-      pr::SetNeverBail(true);
       pr::SaveHere(0);
       next(1);
       break;
-    case 1:  // write the half under test, go back to the start spot
-      if (t < 90) break;
-      if (base_air >= 0) {
-        if (hi - lo <= 1 || cands.empty()) {
-          for (size_t i = lo; i < hi; ++i) {
-            REXLOG_INFO("trainer probe: RESULT gravity at guest {:08X}", uint32_t(cands[i] - gbase));
-          }
-          pr::DebugSetPad(false, 0, 0, 0, 0);
-          REXLOG_INFO("trainer probe: done");
-          next(99);
-          break;
-        }
-        mid = lo + (hi - lo) / 2;
-        write(lo, mid, -3.0f);
-        pr::GoTo(0);
-      }
-      next(2);
+    case 1:
+    case 3:
+      if (t < 120) break;
+      pr::SetNoBounds(step == 3);
+      REXLOG_INFO("trainer probe: teleporting 1500 m out, bounds {}", step == 3 ? "OFF" : "on");
+      pr::SetSlotPosition(1, home[0] + 1500.0f, home[1] + 30.0f, home[2]);
+      pr::GoTo(1);
+      next(step + 1);
       break;
     case 2:
-      if (t < 300) break;
-      pr::DebugSetPad(true, 0, 0, 0, -1);
-      next(3);
-      break;
-    case 3:
-      if (t < 30) break;
-      pr::DebugSetPad(true, 0, 0, 0, 1);
-      pr::DebugResetMeasure();
-      next(4);
-      break;
     case 4:
-      if (t < 8) break;
-      pr::DebugSetPad(true, 0, 0, 0, 0);
-      next(5);
-      break;
-    case 5: {
-      if (t < 420) break;
-      const pr::Measure m = pr::DebugMeasure();
-      if (base_air < 0) {
-        base_air = m.air_ticks;
-        base_rise = m.max_rise;
-        REXLOG_INFO("trainer probe: baseline air {} ticks rise {:.2f} m", base_air, base_rise);
-      } else {
-        const bool changed = m.air_ticks > base_air + 12 || m.max_rise > base_rise * 1.5f;
-        REXLOG_INFO("trainer probe: [{}, {}) of [{}, {}) air {} rise {:.2f} -> {}", lo, mid, lo, hi,
-                    m.air_ticks, m.max_rise, changed ? "CHANGED" : "same");
-        write(lo, mid, -9.8f);
-        if (changed) hi = mid;
-        else lo = mid;
+      if (t % 120 == 0 && t > 0) {
+        REXLOG_INFO("trainer probe: t {:.0f}s state {} at {:.0f}, {:.0f}, {:.0f} ignored {}", t / 60.0, st.player_state,
+                    st.x, st.y, st.z, st.bounds_ignored);
       }
-      next(1);
+      if (t < 900) break;
+      pr::GoTo(0);
+      next(step + 1);
       break;
-    }
+    case 5:
+      if (t < 300) break;
+      pr::SetNoBounds(false);
+      REXLOG_INFO("trainer probe: done");
+      next(99);
+      break;
     default:
       break;
   }
