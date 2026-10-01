@@ -295,6 +295,8 @@ constexpr Curated kCurated[] = {
     {"Bail: air trick XZ", "Bails", "physics_wipeout", "default", "Wipeout_AirXZTrick", 0, 100000},
     {"Bail: air trick Y", "Bails", "physics_wipeout", "default", "Wipeout_AirYTrick", 0, 100000},
     {"Body flip: min grab time fraction", "Flips", "physics_airstates", "default", "BodyFlipMinGrabTimeFraction", 0, 1},
+    {"Landing: heading auto-correct x", "Flips", "physics_airstates", "default", "MaxHeadingAdjustVsUpY", 0.1, 4, 'g'},
+    {"Landing: max ground angle from up", "Flips", "physics_reckoning", "default", "MaxAllowedGroundNormalFromUp", 0, 180},
     {"Perfect body flips (locks to ONE flip)", "Flips", "physics_mode", nullptr, "PerfectBodyFlips", 0, 1},
     {"Landing: align-to-ground max angle", "Flips", "physics_airstates", "default", "DontAlignAnglePhysicsAir", 0, 4},
     {"Landing: align-to-ground speed", "Flips", "physics_airstates", "default", "SpeedToAlignToGround_PhysAir", 0, 5},
