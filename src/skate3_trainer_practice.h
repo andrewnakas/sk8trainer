@@ -25,6 +25,7 @@ struct Status {
   int requested_hz = 0;         // what the game asked for
   int timer_hz_live = 0;        // read back from the guest timer object
   uint64_t marker_updates = 0;  // session-marker update calls (one per sim tick)
+  uint8_t pad_lt = 0, pad_rt = 0;  // the triggers the game last read
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
   std::string last_event;

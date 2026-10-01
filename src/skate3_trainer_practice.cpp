@@ -565,6 +565,10 @@ extern "C" REX_FUNC(sub_82EE22C0) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
   __imp__sub_82EE22C0(ctx, base);
   std::lock_guard lock(g_mutex);
+  if (user == 0 && state && ctx.r3.u32 == 0) {
+    g_status.pad_lt = REX_LOAD_U8(state + 6);
+    g_status.pad_rt = REX_LOAD_U8(state + 7);
+  }
   if (!g_pad.active || user != 0 || !state) return;
   REX_STORE_U32(state, ++g_pad_packet);
   REX_STORE_U16(state + 4, g_pad.buttons);
