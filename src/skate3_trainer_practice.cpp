@@ -166,6 +166,7 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
         g_pending_goto = g_selected;
         g_bail_handled = true;
         g_status.last_event = "bail -> returning to slot " + std::to_string(g_selected + 1);
+        ++g_status.auto_returns;
       }
     } else {
       g_bail_frames = 0;
@@ -179,7 +180,8 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
       CopyIn(base, marker, s);
       g_last_seen = s.xform;
       g_force_return_frames = 240;  // the game waits a distance-scaled moment
-      g_status.last_event = "going to slot " + std::to_string(g_pending_goto + 1);
+      g_status.last_event = (g_bail_handled && g_bail_frames > 0 ? "bail -> going to slot " : "going to slot ") +
+                            std::to_string(g_pending_goto + 1);
     } else {
       g_status.last_event = s.valid ? "the game blocks marker use right now"
                                     : "slot " + std::to_string(g_pending_goto + 1) + " is empty";
@@ -261,15 +263,24 @@ void Clear(int slot) {
   std::lock_guard lock(g_mutex);
   g_slots[std::clamp(slot, 0, kSlots - 1)] = SlotData{};
 }
-void DebugOffsetSlot(int slot, float dx) {
+void DebugOffsetSlot(int slot, float dx, float dy) {
   std::lock_guard lock(g_mutex);
   auto& s = g_slots[std::clamp(slot, 0, kSlots - 1)];
   if (!s.valid) return;
-  const float x = Be32f(&s.xform[48]) + dx;
-  uint32_t v;
-  std::memcpy(&v, &x, 4);
-  s.xform[48] = uint8_t(v >> 24), s.xform[49] = uint8_t(v >> 16), s.xform[50] = uint8_t(v >> 8),
-  s.xform[51] = uint8_t(v);
+  auto add = [&](int at, float d) {
+    const float f = Be32f(&s.xform[at]) + d;
+    uint32_t v;
+    std::memcpy(&v, &f, 4);
+    s.xform[at] = uint8_t(v >> 24), s.xform[at + 1] = uint8_t(v >> 16),
+    s.xform[at + 2] = uint8_t(v >> 8), s.xform[at + 3] = uint8_t(v);
+  };
+  add(48, dx);
+  add(52, dy);
+}
+
+void DebugForceGameSet() {
+  std::lock_guard lock(g_mutex);
+  g_force_set = true;  // the game places its own marker, as if LB + d-pad down
 }
 
 SlotInfo Slot(int slot) {

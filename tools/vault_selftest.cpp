@@ -15,8 +15,14 @@ int main(int argc, char** argv) {
     std::printf("error: %s\n", t.error.c_str());
     return 1;
   }
-  std::printf("bin_size %u, %zu anchors, %zu fields\n", t.bin_size, t.anchors.size(), t.fields.size());
+  std::printf("bin_size %u, %zu anchors | vlt_size %u, %zu anchors | %zu fields\n", t.bin_size,
+              t.anchors.size(), t.vlt_size, t.vlt_anchors.size(), t.fields.size());
   for (const auto& a : t.anchors) std::printf("anchor %u\n", a.offset);
-  for (const auto& f : t.fields) std::printf("%-40s %8u %g\n", f.source.c_str(), f.offset, f.stock);
+  for (const auto& a : t.vlt_anchors) std::printf("vlt-anchor %u\n", a.offset);
+  for (const auto& f : t.fields) {
+    std::printf("%-46s %s %8u %g", f.source.c_str(), f.blob ? "vlt" : "bin", f.offset, f.stock);
+    for (float y : f.graph_y_stock) std::printf(" %.3f", y);
+    std::printf("\n");
+  }
   return 0;
 }

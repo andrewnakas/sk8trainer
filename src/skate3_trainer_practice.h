@@ -25,6 +25,7 @@ struct Status {
   int requested_hz = 0;         // what the game asked for
   int timer_hz_live = 0;        // read back from the guest timer object
   uint64_t marker_updates = 0;  // session-marker update calls (one per sim tick)
+  int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
   std::string last_event;
 };
@@ -38,7 +39,9 @@ void SaveHere(int slot);            // set the game marker here and copy it to s
 void CaptureGameMarker(int slot);   // copy the game's current marker to slot
 void GoTo(int slot);                // teleport through the game's own return path
 void Clear(int slot);
-void DebugOffsetSlot(int slot, float dx);  // self-test: move a saved slot along x
+// Self-test / audit helpers.
+void DebugOffsetSlot(int slot, float dx, float dy = 0.0f);  // move a saved slot
+void DebugForceGameSet();  // the game places its own marker (like LB + d-pad down)
 SlotInfo Slot(int slot);
 int SelectedSlot();
 void SelectSlot(int slot);

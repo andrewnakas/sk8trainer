@@ -144,7 +144,8 @@ struct Export {
 
 // Applies the pointer table (like the game's loader, but with file-relative
 // targets) and returns exports plus the .bin byte offsets that hold pointers.
-std::vector<Export> LoadVault(Bytes& vlt, Bytes& bin, std::unordered_set<uint32_t>* bin_slots) {
+std::vector<Export> LoadVault(Bytes& vlt, Bytes& bin, std::unordered_set<uint32_t>* bin_slots,
+                              std::unordered_set<uint32_t>* vlt_slots = nullptr) {
   std::vector<Export> exports;
   size_t at = 0;
   while (at + 8 <= vlt.size()) {
@@ -162,8 +163,9 @@ std::vector<Export> LoadVault(Bytes& vlt, Bytes& bin, std::unordered_set<uint32_
           target = index == 0 ? &vlt : &bin;
         } else if (kind == 1 || kind == 3) {
           Put32(*target, offset, kind == 1 ? 0 : dest);
-          if (bin_slots && target == &bin) {
-            for (uint32_t k = 0; k < 4; ++k) bin_slots->insert(offset + k);
+          auto* slots = target == &bin ? bin_slots : vlt_slots;
+          if (slots) {
+            for (uint32_t k = 0; k < 4; ++k) slots->insert(offset + k);
           }
         } else if (kind != 4) {
           throw Error("unknown vault pointer kind");
@@ -193,10 +195,15 @@ struct Curated {
   const char* label;
   const char* group;
   const char* cls;
-  const char* key;  // nullptr = every collection of the class
-  const char* field;
+  const char* key;    // nullptr = every collection of the class
+  const char* field;  // name, or "#<16 hex digits>" for an unnamed field
   double min, max;
+  char kind = 'v';    // 'v' value, 'g' curve multiplier (y values x N)
 };
+
+uint64_t FieldKey(const char* field) {
+  return field[0] == '#' ? std::strtoull(field + 1, nullptr, 16) : Hash64(field);
+}
 
 // Field names are the game's AttribSys identifiers (hashed, never shipped
 // data). Ranges are generous editing limits, not game values.
@@ -217,9 +224,17 @@ constexpr Curated kCurated[] = {
     {"Motor top speed", "Gravity & Speed", "physics_mode", nullptr, "MotorTopSpeed", 0, 100},
     {"Auto push", "Gravity & Speed", "physics_mode", nullptr, "AutoPushEnabled", 0, 1},
     {"Pump effect", "Gravity & Speed", "physics_mode", nullptr, "PumpEffectFactor", 0, 200},
+    {"Body spin speed x", "Spin", "physics_bodyspin", "default", "PropBodySpinVsTime", 0.1, 10, 'g'},
+    {"Body spin speed x (alt curve)", "Spin", "physics_bodyspin", "default", "#D7C6855B7814D048", 0.1, 10, 'g'},
+    {"Body spin response x", "Spin", "physics_bodyspin", "default", "DerivativeBodySpinVsTime", 0.1, 10, 'g'},
     {"Max air spin speed", "Spin", "physics_airstates", "default", "MaxSpinSpeed", 0, 5000},
     {"Max auto body spin", "Spin", "physics_mode", nullptr, "MaxAutoBodySpinSpeed", 0, 100},
     {"Easy body spins", "Spin", "physics_mode", nullptr, "EasyBodySpins", 0, 1},
+    {"Flip scalar", "Flips", "physics_reckoning", "default", "FlipScalar", 0, 20},
+    {"Flip max speed", "Flips", "physics_reckoning", "default", "FlipMaxSpeed", 0, 100},
+    {"Flip body-spin scalar", "Flips", "physics_reckoning", "default", "FlipBodySpinScalar", 0, 10},
+    {"Flip speed smoothing", "Flips", "physics_reckoning", "default", "FlipSpeedSmoothingFactor", 0, 1},
+    {"Off-board jump height", "Pop & Jump", "physics_state_offboard_air", "default", "JumpHeight", 0, 20},
     {"Bail: max speed into ground", "Bails", "physics_wipeout", "default", "Wipeout_AirMaxSpeedIntoGround", 0, 1000},
     {"Bail: max speed into stairs", "Bails", "physics_wipeout", "default", "Wipeout_AirMaxSpeedIntoStairs", 0, 1000},
     {"Bail: air skeleton contact", "Bails", "physics_wipeout", "default", "Wipeout_AirSkeletonMaxContact", 0, 1000},
@@ -273,9 +288,10 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
     Bytes& cv = files["data/db/skatercollections.vlt"];
     Bytes& cb = files["data/db/skatercollections.bin"];
     const Bytes raw_cb = cb;  // what sits in guest memory, minus pointer slots
-    std::unordered_set<uint32_t> slots;
+    const Bytes raw_cv = cv;
+    std::unordered_set<uint32_t> slots, vslots;
     const auto schema = LoadVault(sv, sb, nullptr);
-    const auto collections = LoadVault(cv, cb, &slots);
+    const auto collections = LoadVault(cv, cb, &slots, &vslots);
 
     // class -> field -> layout info
     std::map<uint64_t, std::map<uint64_t, SchemaField>> classes;
@@ -290,75 +306,146 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
       }
     }
     // (class, key) -> layout offset in the .bin
-    std::vector<std::pair<std::pair<uint64_t, uint64_t>, uint32_t>> layouts;
+    struct Collection {
+      uint32_t layout;   // .bin offset of the layout block (0 = none)
+      uint32_t entries;  // .vlt offset of the inline entry table
+      uint32_t count;
+    };
+    std::map<std::pair<uint64_t, uint64_t>, Collection> layouts;
     for (const Export& e : collections) {
       if (e.kind != kCollectionKind) continue;
       const uint64_t key = U64(cv, e.at), cls = U64(cv, e.at + 8);
       // key, class, parent (u64 each), reserve, pad, count (u32), ntypes,
-      // typeslen (u16), layout (u32) -> layout at +40.
-      const uint32_t layout = U32(cv, e.at + 40);
-      if (layout) layouts.push_back({{cls, key}, layout});
+      // typeslen (u16), layout (u32) -> count at +32, typeslen at +38,
+      // layout at +40; 16-byte entries follow the 48-byte header + types.
+      const uint32_t count = U32(cv, e.at + 32);
+      const uint16_t typeslen = U16(cv, e.at + 38);
+      layouts[{cls, key}] = {U32(cv, e.at + 40), uint32_t(e.at + 48 + typeslen * 8u), count};
     }
-    std::sort(layouts.begin(), layouts.end());
 
     for (const Curated& c : kCurated) {
-      const uint64_t cls = Hash64(c.cls), fkey = Hash64(c.field);
+      const uint64_t cls = Hash64(c.cls), fkey = FieldKey(c.field);
       auto ci = classes.find(cls);
       if (ci == classes.end()) continue;
       auto fi = ci->second.find(fkey);
-      if (fi == ci->second.end() || !(fi->second.flags & 2)) continue;
+      if (fi == ci->second.end()) continue;
       const SchemaField& f = fi->second;
+      const bool layout_field = (f.flags & 2) != 0;
       Type type;
-      if (f.type == Hash64("EA::Reflection::Float")) type = Type::kF32;
+      if (c.kind == 'g') {
+        // PointNegGraphData8 (80 bytes): xmin ymin xmax ymax, x[8], y[8].
+        // PointGraphData8 (64 bytes): x[8], y[8].
+        if (!layout_field || (f.size != 80 && f.size != 64)) continue;
+        type = Type::kGraphScale;
+      } else if (f.type == Hash64("EA::Reflection::Float")) type = Type::kF32;
       else if (f.type == Hash64("EA::Reflection::Bool")) type = Type::kBool;
       else if (f.type == Hash64("EA::Reflection::Int32")) type = Type::kI32;
       else if (f.type == Hash64("EA::Reflection::UInt32")) type = Type::kU32;
       else continue;
-      for (const auto& [ck, layout] : layouts) {
+      if (!layout_field && (f.size > 4 || (f.flags & 1))) continue;  // inline scalars only
+      for (const auto& [ck, col] : layouts) {
         if (ck.first != cls || (c.key && ck.second != Hash64(c.key))) continue;
-        const uint32_t at = layout + f.offset;
-        if (at + 4 > raw_cb.size() || slots.count(at)) continue;
         Field out;
+        const Bytes* raw = &raw_cb;
+        if (layout_field) {
+          if (!col.layout) continue;
+          out.blob = kBin;
+          out.offset = col.layout + f.offset;
+          if (out.offset + f.size > raw_cb.size() || slots.count(out.offset)) continue;
+        } else {
+          // Inline: find this field's entry; its value is the entry's last 4 bytes.
+          uint32_t at = 0;
+          for (uint32_t k = 0; k < col.count && !at; ++k) {
+            const uint32_t pos = col.entries + k * 16;
+            if (pos + 16 <= raw_cv.size() && U64(raw_cv, pos) == fkey) at = pos + 8;
+          }
+          if (!at || vslots.count(at)) continue;
+          out.blob = kVlt;
+          out.offset = at;
+          out.key = fkey;
+          raw = &raw_cv;
+        }
         out.label = c.key ? c.label : std::string(c.label) + " [" + KeyName(ck.second) + "]";
         out.group = c.group;
         out.source = std::string(c.cls) + "/" + KeyName(ck.second) + "/" + c.field;
         out.type = type;
-        out.offset = at;
         out.min = c.min;
         out.max = c.max;
-        const uint32_t word = U32(raw_cb, at);
-        switch (type) {
-          case Type::kF32: {
+        if (type == Type::kGraphScale) {
+          const uint32_t y0 = f.size == 80 ? 48 : 32;
+          for (uint32_t k = 0; k < 8; ++k) out.graph_y_offsets.push_back(y0 + k * 4);
+          if (f.size == 80) out.graph_y_offsets.push_back(12);  // ymax
+          for (uint32_t o : out.graph_y_offsets) {
+            const uint32_t word = U32(*raw, out.offset + o);
             float v;
             std::memcpy(&v, &word, 4);
-            out.stock = v;
-            break;
+            out.graph_y_stock.push_back(v);
           }
-          case Type::kBool: out.stock = raw_cb[at] ? 1 : 0; break;
-          case Type::kI32: out.stock = static_cast<int32_t>(word); break;
-          case Type::kU32: out.stock = word; break;
+          out.stock = 1.0;
+        } else {
+          const uint32_t word = U32(*raw, out.offset);
+          switch (type) {
+            case Type::kF32: {
+              float v;
+              std::memcpy(&v, &word, 4);
+              out.stock = v;
+              break;
+            }
+            case Type::kBool: out.stock = (*raw)[out.offset] ? 1 : 0; break;
+            case Type::kI32: out.stock = static_cast<int32_t>(word); break;
+            default: out.stock = word; break;
+          }
         }
         table.fields.push_back(std::move(out));
       }
     }
 
-    // Anchors: one unique, pointer-free, high-entropy 64-byte window per eighth.
-    constexpr size_t kW = 64;
-    const size_t step = raw_cb.size() / 8;
-    for (size_t start = 0; start + kW < raw_cb.size() && table.anchors.size() < 8; start += step) {
-      for (size_t off = start; off < std::min(start + step, raw_cb.size() - kW); off += 16) {
-        bool clean = true;
-        for (size_t k = off; k < off + kW && clean; ++k) clean = !slots.count(uint32_t(k));
-        if (!clean || Entropy(&raw_cb[off], kW) < 4.5) continue;
-        auto first = std::search(raw_cb.begin(), raw_cb.end(), raw_cb.begin() + off,
-                                 raw_cb.begin() + off + kW);
-        auto again = std::search(first + 1, raw_cb.end(), raw_cb.begin() + off,
-                                 raw_cb.begin() + off + kW);
-        if (again != raw_cb.end()) continue;
-        table.anchors.push_back({uint32_t(off), Bytes(raw_cb.begin() + off, raw_cb.begin() + off + kW)});
-        break;
+    // Anchors: one unique, pointer-free, high-entropy 64-byte window per
+    // eighth of each blob.
+    auto pick = [](const Bytes& raw, const std::unordered_set<uint32_t>& ptrs) {
+      constexpr size_t kW = 64;
+      std::vector<Anchor> out;
+      const size_t step = raw.size() / 8;
+      for (size_t start = 0; start + kW < raw.size() && out.size() < 8; start += step) {
+        for (size_t off = start; off < std::min(start + step, raw.size() - kW); off += 16) {
+          bool clean = true;
+          for (size_t k = off; k < off + kW && clean; ++k) clean = !ptrs.count(uint32_t(k));
+          if (!clean || Entropy(&raw[off], kW) < 4.5) continue;
+          auto first = std::search(raw.begin(), raw.end(), raw.begin() + off, raw.begin() + off + kW);
+          auto again = std::search(first + 1, raw.end(), raw.begin() + off, raw.begin() + off + kW);
+          if (again != raw.end()) continue;
+          out.push_back({uint32_t(off), Bytes(raw.begin() + off, raw.begin() + off + kW)});
+          break;
+        }
+      }
+      return out;
+    };
+    table.anchors = pick(raw_cb, slots);
+    // .vlt: the game rewrites entry flag bytes when it loads the vault, so
+    // 64-byte windows do not survive. Anchor on entry KEYS instead (8-byte
+    // field hashes it never touches), spread over the file, each unique.
+    {
+      std::vector<uint32_t> keys;
+      for (const auto& [ck, col] : layouts) {
+        for (uint32_t k = 0; k < col.count; ++k) keys.push_back(col.entries + k * 16);
+      }
+      std::sort(keys.begin(), keys.end());
+      const size_t want = 8;
+      for (size_t n = 0; n < want && !keys.empty(); ++n) {
+        // Walk forward from each eighth of the entry list to a unique key.
+        for (size_t i = keys.size() * n / want; i < keys.size(); ++i) {
+          const uint32_t at = keys[i];
+          if (at + 8 > raw_cv.size()) continue;
+          const Bytes key(raw_cv.begin() + at, raw_cv.begin() + at + 8);
+          auto first = std::search(raw_cv.begin(), raw_cv.end(), key.begin(), key.end());
+          auto again = std::search(first + 1, raw_cv.end(), key.begin(), key.end());
+          if (again != raw_cv.end()) continue;
+          table.vlt_anchors.push_back({at, key});
+          break;
+        }
       }
     }
+    table.vlt_size = uint32_t(raw_cv.size());
     table.bin_size = uint32_t(raw_cb.size());
     if (table.anchors.size() < 3) throw Error("could not pick enough anchors");
     if (table.fields.empty()) throw Error("no curated fields found in this vault");

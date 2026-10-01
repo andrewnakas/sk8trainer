@@ -13,13 +13,23 @@
 
 namespace skate3::trainer::vault {
 
-enum class Type { kF32, kBool, kI32, kU32 };
+// kGraphScale: a multiplier applied to every y value of a curve field
+// (PointGraphData8 / PointNegGraphData8); its stock value is 1.
+enum class Type { kF32, kBool, kI32, kU32, kGraphScale };
+
+enum Blob : uint8_t { kBin = 0, kVlt = 1 };  // skatercollections.bin / .vlt
 
 struct Field {
   std::string label, group, source;
   Type type = Type::kF32;
-  uint32_t offset = 0;  // into skatercollections.bin
+  Blob blob = kBin;
+  uint32_t offset = 0;  // into that blob
+  uint64_t key = 0;     // field hash (inline .vlt fields are found by key + stock value)
   double stock = 0, min = 0, max = 1;
+  // kGraphScale only: byte offsets (from `offset`) and stock values of the
+  // y floats to scale.
+  std::vector<uint32_t> graph_y_offsets;
+  std::vector<float> graph_y_stock;
 };
 
 struct Anchor {
@@ -29,7 +39,9 @@ struct Anchor {
 
 struct Table {
   uint32_t bin_size = 0;
-  std::vector<Anchor> anchors;
+  std::vector<Anchor> anchors;      // locate skatercollections.bin
+  uint32_t vlt_size = 0;
+  std::vector<Anchor> vlt_anchors;  // locate skatercollections.vlt
   std::vector<Field> fields;
   std::string error;  // empty on success
 };

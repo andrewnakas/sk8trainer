@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -38,6 +39,10 @@ REXCVAR_DEFINE_BOOL(skate3_trainer_button, SK8TRAINER_TOUCH_DEFAULT, "Skate 3",
 REXCVAR_DEFINE_BOOL(skate3_trainer_selftest, false, "Skate 3",
                     "SK8TRAINER self-test: once in gameplay, exercise every feature and log "
                     "'trainer selftest:' lines (for unattended checks; restores stock after)");
+REXCVAR_DEFINE_BOOL(skate3_trainer_audit, false, "Skate 3",
+                    "SK8TRAINER full audit: once in gameplay, test every slider, freeze, preset, "
+                    "saved values, game speed, marker slot and auto-return; logs 'trainer audit:' "
+                    "lines and writes <user data>/trainer/audit-report.txt. Restores everything after.");
 REXCVAR_DEFINE_BOOL(skate3_trainer_apply_saved, true, "Skate 3",
                     "Re-apply the saved trainer values (<user data>/trainer/user.toml) whenever the vault is found");
 
@@ -50,7 +55,13 @@ using Anchor = vault::Anchor;
 struct Entry {
   std::string label, group, source;
   Type type = Type::kF32;
+  vault::Blob blob = vault::kBin;
   uint32_t offset = 0;
+  uint64_t key = 0;          // inline (.vlt) fields: field hash
+  uint8_t* direct = nullptr; // inline fields: host address of the live value
+  std::vector<uint8_t*> copies;  // inline fields: every copy the game keeps (written together)
+  std::vector<uint32_t> graph_y_offsets;  // kGraphScale
+  std::vector<float> graph_y_stock;
   double stock = 0, min = 0, max = 1;
   double value = 0;     // last value read from / written to guest memory
   bool frozen = false;  // rewritten every frame
@@ -70,6 +81,9 @@ bool g_table_loaded = false;
 
 std::atomic<uint8_t*> g_base{nullptr};    // guest memory base (host)
 std::atomic<uint8_t*> g_blob{nullptr};    // host address of the vault .bin
+std::atomic<uint8_t*> g_vlt{nullptr};     // host address of the vault .vlt (inline fields)
+std::vector<Anchor> g_vlt_anchors;
+uint32_t g_vlt_size = 0;
 std::atomic<Locate> g_locate{Locate::kIdle};
 std::atomic<uint32_t> g_scan_hits{0};
 std::atomic<bool> g_menu_open{false};
@@ -100,43 +114,72 @@ void StoreBE32(uint8_t* p, uint32_t v) {
   p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
 }
 
-double ReadEntry(const Entry& e, uint8_t* blob) {
-  uint8_t* p = blob + e.offset;
+float LoadBEf(const uint8_t* p) {
+  const uint32_t bits = LoadBE32(p);
+  float f;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
+void StoreBEf(uint8_t* p, float f) {
+  uint32_t bits;
+  std::memcpy(&bits, &f, 4);
+  StoreBE32(p, bits);
+}
+
+bool HostReadable(const uint8_t* p, size_t n);
+
+// `bin` is the located .bin blob; entries that live in the .vlt use g_vlt.
+// Returns nullptr when that blob has not been found.
+uint8_t* BaseFor(const Entry& e, uint8_t* bin) {
+  // Inline fields are located one by one (see LocateInline); the game does
+  // not keep the .vlt as one contiguous copy.
+  return e.blob == vault::kVlt ? (e.direct ? e.direct - e.offset : nullptr) : bin;
+}
+
+double ReadEntry(const Entry& e, uint8_t* bin) {
+  uint8_t* base = BaseFor(e, bin);
+  if (!base) return e.stock;
+  uint8_t* p = base + e.offset;
+  if (e.blob == vault::kVlt && !HostReadable(p, 4)) return e.stock;  // partly resident
   switch (e.type) {
-    case Type::kF32: {
-      uint32_t bits = LoadBE32(p);
-      float f;
-      std::memcpy(&f, &bits, 4);
-      return f;
-    }
-    case Type::kBool:
-      return p[0] ? 1.0 : 0.0;
-    case Type::kI32:
-      return static_cast<int32_t>(LoadBE32(p));
-    case Type::kU32:
-      return LoadBE32(p);
+    case Type::kF32: return LoadBEf(p);
+    case Type::kBool: return p[0] ? 1.0 : 0.0;
+    case Type::kI32: return static_cast<int32_t>(LoadBE32(p));
+    case Type::kU32: return LoadBE32(p);
+    case Type::kGraphScale:
+      // The multiplier is the ratio of the first non-zero y to its stock.
+      for (size_t k = 0; k < e.graph_y_offsets.size(); ++k) {
+        if (e.graph_y_stock[k] != 0) return LoadBEf(p + e.graph_y_offsets[k]) / e.graph_y_stock[k];
+      }
+      return 1.0;
   }
   return 0;
 }
 
-void WriteEntry(const Entry& e, uint8_t* blob, double v) {
-  uint8_t* p = blob + e.offset;
-  switch (e.type) {
-    case Type::kF32: {
-      float f = static_cast<float>(v);
-      uint32_t bits;
-      std::memcpy(&bits, &f, 4);
-      StoreBE32(p, bits);
-      break;
+void WriteEntry(const Entry& e, uint8_t* bin, double v) {
+  uint8_t* base = BaseFor(e, bin);
+  if (!base) return;
+  if (e.blob == vault::kVlt && e.copies.size() > 1) {
+    // The game keeps more than one copy of some inline rows: write them all.
+    for (uint8_t* copy : e.copies) {
+      if (copy == e.direct || !HostReadable(copy, 4)) continue;
+      if (e.type == Type::kF32) StoreBEf(copy, static_cast<float>(v));
+      else if (e.type == Type::kBool) copy[0] = v != 0 ? 1 : 0;
+      else StoreBE32(copy, static_cast<uint32_t>(static_cast<int64_t>(std::llround(v))));
     }
-    case Type::kBool:
-      p[0] = v != 0 ? 1 : 0;
-      break;
-    case Type::kI32:
-      StoreBE32(p, static_cast<uint32_t>(static_cast<int32_t>(std::lround(v))));
-      break;
-    case Type::kU32:
-      StoreBE32(p, static_cast<uint32_t>(std::max(0.0, std::round(v))));
+  }
+  uint8_t* p = base + e.offset;
+  if (e.blob == vault::kVlt && !HostReadable(p, 4)) return;
+  switch (e.type) {
+    case Type::kF32: StoreBEf(p, static_cast<float>(v)); break;
+    case Type::kBool: p[0] = v != 0 ? 1 : 0; break;
+    case Type::kI32: StoreBE32(p, static_cast<uint32_t>(static_cast<int32_t>(std::lround(v)))); break;
+    case Type::kU32: StoreBE32(p, static_cast<uint32_t>(std::max(0.0, std::round(v)))); break;
+    case Type::kGraphScale:
+      for (size_t k = 0; k < e.graph_y_offsets.size(); ++k) {
+        StoreBEf(p + e.graph_y_offsets[k], static_cast<float>(e.graph_y_stock[k] * v));
+      }
       break;
   }
 }
@@ -178,13 +221,19 @@ void LoadTable() {
   }
   g_bin_size = table.bin_size;
   g_anchors = std::move(table.anchors);
+  g_vlt_anchors = std::move(table.vlt_anchors);
+  g_vlt_size = table.vlt_size;
   for (vault::Field& f : table.fields) {
     Entry e;
     e.label = std::move(f.label);
     e.group = std::move(f.group);
     e.source = std::move(f.source);
     e.type = f.type;
+    e.blob = f.blob;
     e.offset = f.offset;
+    e.key = f.key;
+    e.graph_y_offsets = std::move(f.graph_y_offsets);
+    e.graph_y_stock = std::move(f.graph_y_stock);
     e.stock = e.value = f.stock;
     e.min = f.min;
     e.max = f.max;
@@ -231,21 +280,43 @@ void ApplySavedLocked(uint8_t* blob) {
 // Anchors are pointer-free windows of skatercollections.bin; every alias of
 // guest memory that holds the loaded blob matches all of them at the same
 // relative offsets. Pick the candidate base where the most anchors agree.
-bool AnchorsMatch(uint8_t* blob, int* count) {
-  int ok = 0;
-  for (const Anchor& a : g_anchors) {
-    if (std::memcmp(blob + a.offset, a.bytes.data(), a.bytes.size()) == 0) ++ok;
-  }
-  if (count) *count = ok;
-  return ok * 2 > static_cast<int>(g_anchors.size());
+// True when [p, p+n) is committed, readable guest memory (p is a host
+// pointer inside the guest address space).
+bool HostReadable(const uint8_t* p, size_t n) {
+  uint8_t* base = g_base.load();
+  auto* memory = rex::system::kernel_memory();
+  if (!base || !memory || p < base || p + n > base + 0x100000000ull) return false;
+  const uint32_t guest = static_cast<uint32_t>(p - base);
+  auto* heap = memory->LookupHeap(guest);
+  rex::memory::HeapAllocationInfo info{};
+  if (!heap || !heap->QueryRegionInfo(guest, &info)) return false;
+  return (info.state & rex::memory::kMemoryAllocationCommit) &&
+         (info.protect & rex::memory::kMemoryProtectRead) &&
+         uint64_t(guest) + n <= uint64_t(info.base_address) + info.region_size;
 }
 
-void ScanThread(uint8_t* base) {
-  const Anchor& first = g_anchors.front();
-  const auto searcher = std::boyer_moore_horspool_searcher(first.bytes.begin(), first.bytes.end());
+bool AnchorsMatch(uint8_t* blob, int* count, const std::vector<Anchor>& anchors = g_anchors) {
+  int ok = 0;
+  for (const Anchor& a : anchors) {
+    if (HostReadable(blob + a.offset, a.bytes.size()) &&
+        std::memcmp(blob + a.offset, a.bytes.data(), a.bytes.size()) == 0) {
+      ++ok;
+    }
+  }
+  if (count) *count = ok;
+  return !anchors.empty() && ok * 2 > static_cast<int>(anchors.size());
+}
+
+// Finds the host address of a blob whose anchors are `anchors` (best match
+// over all read/write guest memory). Returns nullptr when not found.
+uint8_t* FindBlob(const std::vector<Anchor>& anchors, uint32_t size, int* best_count_out,
+                  uint32_t* hits_out) {
   uint8_t* best = nullptr;
   int best_count = 0;
   uint32_t hits = 0;
+  if (anchors.empty() || !size) return nullptr;
+  const Anchor& first = anchors.front();
+  const auto searcher = std::boyer_moore_horspool_searcher(first.bytes.begin(), first.bytes.end());
   auto* memory = rex::system::kernel_memory();
   // Walk the guest address space through the runtime's own heap table, so
   // only committed pages are touched (portable: no OS memory queries).
@@ -270,9 +341,17 @@ void ScanThread(uint8_t* base) {
         if (it == region_end) break;
         uint8_t* blob = it - first.offset;
         int count = 0;
-        if (blob >= region && blob + g_bin_size <= region_end) {
+        // Only the anchor windows must be inside this region: the game may
+        // keep just part of a blob (the .vlt's entry tables) resident.
+        {
           ++hits;
-          AnchorsMatch(blob, &count);
+          for (const Anchor& an : anchors) {
+            uint8_t* at = blob + an.offset;
+            if (at >= region && at + an.bytes.size() <= region_end &&
+                std::memcmp(at, an.bytes.data(), an.bytes.size()) == 0) {
+              ++count;
+            }
+          }
           if (count > best_count) {
             best_count = count;
             best = blob;
@@ -282,8 +361,121 @@ void ScanThread(uint8_t* base) {
     }
     a = next > a ? next : a + 0x1000;
   }
+  if (best_count_out) *best_count_out = best_count;
+  if (hits_out) *hits_out = hits;
+  return best && best_count * 2 > static_cast<int>(anchors.size()) ? best : nullptr;
+}
+
+// Every read/write guest location holding `pattern` (at most `limit`).
+std::vector<uint8_t*> FindAll(const std::vector<uint8_t>& pattern, size_t limit) {
+  std::vector<uint8_t*> out;
+  const auto searcher = std::boyer_moore_horspool_searcher(pattern.begin(), pattern.end());
+  auto* memory = rex::system::kernel_memory();
+  uint64_t a = 0x00010000;
+  while (memory && a < 0x100000000ull && out.size() < limit) {
+    auto* heap = memory->LookupHeap(static_cast<uint32_t>(a));
+    rex::memory::HeapAllocationInfo info{};
+    if (!heap || !heap->QueryRegionInfo(static_cast<uint32_t>(a), &info) || !info.region_size) {
+      a = (a + 0x10000) & ~0xFFFFull;
+      continue;
+    }
+    const uint64_t next = uint64_t(info.base_address) + info.region_size;
+    constexpr uint32_t kReadWrite = rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite;
+    if ((info.state & rex::memory::kMemoryAllocationCommit) && (info.protect & kReadWrite) == kReadWrite) {
+      uint8_t* region = memory->TranslateVirtual<uint8_t*>(info.base_address);
+      uint8_t* region_end = region + info.region_size;
+      for (auto it = region; out.size() < limit; ++it) {
+        it = std::search(it, region_end, searcher);
+        if (it == region_end) break;
+        out.push_back(it);
+      }
+    }
+    a = next > a ? next : a + 0x1000;
+  }
+  return out;
+}
+
+// Finds each inline (.vlt) field's live value: the game keeps collection
+// entries as [8-byte field key][4-byte value][type][flags], so the key
+// followed by the stock value identifies the row. One pass, 4-byte aligned.
+int LocateInline() {
+  struct Want {
+    Entry* e;
+    uint8_t key[8];
+    uint8_t value[4];
+    int hits = 0;
+  };
+  std::vector<Want> wants;
+  {
+    std::lock_guard lock(g_mutex);
+    for (Entry& e : g_entries) {
+      if (e.blob != vault::kVlt) continue;
+      e.direct = nullptr;
+      e.copies.clear();
+      Want w{&e};
+      for (int k = 0; k < 8; ++k) w.key[k] = uint8_t(e.key >> (56 - 8 * k));
+      uint32_t bits = 0;
+      if (e.type == Type::kF32) {
+        float f = static_cast<float>(e.stock);
+        std::memcpy(&bits, &f, 4);
+      } else {
+        bits = static_cast<uint32_t>(static_cast<int64_t>(e.stock));
+      }
+      for (int k = 0; k < 4; ++k) w.value[k] = uint8_t(bits >> (24 - 8 * k));
+      wants.push_back(w);
+    }
+  }
+  if (wants.empty()) return 0;
+  auto* memory = rex::system::kernel_memory();
+  uint64_t a = 0x00010000;
+  while (memory && a < 0x100000000ull) {
+    auto* heap = memory->LookupHeap(static_cast<uint32_t>(a));
+    rex::memory::HeapAllocationInfo info{};
+    if (!heap || !heap->QueryRegionInfo(static_cast<uint32_t>(a), &info) || !info.region_size) {
+      a = (a + 0x10000) & ~0xFFFFull;
+      continue;
+    }
+    const uint64_t next = uint64_t(info.base_address) + info.region_size;
+    constexpr uint32_t kReadWrite = rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite;
+    if ((info.state & rex::memory::kMemoryAllocationCommit) && (info.protect & kReadWrite) == kReadWrite &&
+        info.region_size >= 12) {
+      const uint8_t* region = memory->TranslateVirtual<uint8_t*>(info.base_address);
+      const uint8_t* end = region + info.region_size - 12;
+      for (const uint8_t* p = region; p <= end; p += 4) {
+        for (Want& w : wants) {
+          if (p[0] == w.key[0] && std::memcmp(p, w.key, 8) == 0 && std::memcmp(p + 8, w.value, 4) == 0) {
+            if (w.hits++ == 0) w.e->direct = const_cast<uint8_t*>(p + 8);
+            w.e->copies.push_back(const_cast<uint8_t*>(p + 8));
+          }
+        }
+      }
+    }
+    a = next > a ? next : a + 0x1000;
+  }
+  int found = 0;
+  for (const Want& w : wants) {
+    found += w.e->direct != nullptr;
+    REXLOG_INFO("trainer: inline {} -> {} ({} match{})", w.e->source,
+                w.e->direct ? "found" : "NOT found", w.hits, w.hits == 1 ? "" : "es");
+  }
+  return found;
+}
+
+void ScanThread(uint8_t* base) {
+  int best_count = 0, vlt_count = 0;
+  uint32_t hits = 0;
+  uint8_t* best = FindBlob(g_anchors, g_bin_size, &best_count, &hits);
+  (void)vlt_count;
+  const int inline_found = best ? LocateInline() : 0;
+  int inline_total = 0;
+  {
+    std::lock_guard lock(g_mutex);
+    for (const Entry& e : g_entries) inline_total += e.blob == vault::kVlt;
+  }
+  uint8_t* vlt = inline_found > 0 ? best : nullptr;  // "flips found" marker only
+  g_vlt = vlt;
   g_scan_hits = hits;
-  if (best && best_count * 2 > static_cast<int>(g_anchors.size())) {
+  if (best) {
     std::lock_guard lock(g_mutex);
     int matches = 0;
     for (Entry& e : g_entries) {
@@ -295,9 +487,10 @@ void ScanThread(uint8_t* base) {
     g_blob = best;
     g_locate = Locate::kFound;
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "vault at host +0x%llX (%d/%zu anchors, %d/%zu stock values)",
+    std::snprintf(buf, sizeof(buf), "vault at host +0x%llX (%d/%zu anchors, %d/%zu stock values%s found)",
                   static_cast<unsigned long long>(best - base), best_count, g_anchors.size(),
-                  matches, g_entries.size());
+                  matches, g_entries.size(),
+                  (", flips " + std::to_string(inline_found) + "/" + std::to_string(inline_total)).c_str());
     g_status = buf;
     REXLOG_INFO("trainer: {}", g_status);
   } else {
@@ -338,6 +531,10 @@ const std::vector<Preset>& Presets() {
        {{"Wipeout_AirMaxSpeedIntoGround", true, 100}, {"Wipeout_AirMaxSpeedIntoStairs", true, 100},
         {"Wipeout_AirSkeletonMaxContact", true, 100}, {"Wipeout_GroundSkeletonMaxContact", true, 100},
         {"Wipeout_GroundBalanceTotal", true, 100}}},
+      {"Spin & Flip", "Body spins x2.5, faster flips, higher spin caps",
+       {{"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5},
+        {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3},
+        {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}}},
       {"THPS", "Fast spins, easy body spins, auto push",
        {{"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1},
         {"AutoPushEnabled", false, 1}, {"MaxPushableSpeed", true, 2}}},
@@ -689,6 +886,384 @@ void SelfTest() {
   }
 }
 
+
+// Full audit (skate3_trainer_audit). Runs from Tick on the guest thread, one
+// step at a time, and leaves the game and user.toml as it found them.
+void Audit() {
+  namespace pr = practice;
+  using clock = std::chrono::steady_clock;
+  struct Result {
+    std::string name;
+    bool pass;
+    std::string detail;
+  };
+  static std::vector<Result> results;
+  static std::vector<std::string> skipped;
+  static int step = 0;
+  static clock::time_point at;
+  static uint64_t updates_at = 0;
+  static std::vector<double> test_values;
+  static std::string user_backup;
+  static bool had_user = false;
+  static size_t preset_index = 0;
+  static size_t speed_index = 0;
+  static std::set<int32_t> states_seen;
+  static bool bail_seen = false;
+  const auto now = clock::now();
+  const double waited = std::chrono::duration<double>(now - at).count();
+  const pr::Status st = pr::GetStatus();
+  uint8_t* blob = g_blob.load();
+  auto next = [&](int n) {
+    step = n;
+    at = now;
+    updates_at = st.marker_updates;
+  };
+  auto record = [&](std::string name, bool pass, std::string detail) {
+    REXLOG_INFO("trainer audit: {} {} {}", pass ? "PASS" : "FAIL", name, detail);
+    results.push_back({std::move(name), pass, std::move(detail)});
+  };
+  auto close_to = [](double a, double b) { return std::fabs(a - b) <= 1e-4 * std::max(1.0, std::fabs(b)); };
+  auto test_value = [](const Entry& e) {
+    switch (e.type) {
+      case Type::kBool: return e.stock != 0 ? 0.0 : 1.0;
+      case Type::kI32:
+      case Type::kU32: return e.stock + 1;
+      default: return e.stock == 0 ? 0.5 : e.stock * 1.5;
+    }
+  };
+  auto restore_all_locked = [&]() {
+    for (Entry& e : g_entries) {
+      e.frozen = false;
+      e.touched = false;
+      e.value = e.stock;
+      if (blob) WriteEntry(e, blob, e.stock);
+    }
+  };
+  if (st.player_state >= 0) {
+    states_seen.insert(st.player_state);
+    if (st.player_state == 300) bail_seen = true;
+  }
+
+  switch (step) {
+    case 0:  // wait for the vault and gameplay
+      if (blob && st.marker_seen) {
+        REXLOG_INFO("trainer audit: start - {} | {} entries", g_status, g_entries.size());
+        std::error_code ec;
+        had_user = std::filesystem::exists(UserPath(), ec);
+        if (had_user) {
+          std::ifstream in(UserPath());
+          user_backup.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        next(1);
+      }
+      break;
+
+    case 1: {  // every slider: start at stock, write a test value, read it back
+      if (waited < 3) break;
+      std::lock_guard lock(g_mutex);
+      int at_stock = 0, readback = 0;
+      std::string bad;
+      test_values.clear();
+      for (Entry& e : g_entries) {
+        // Stock, or the player's own saved value re-applied from user.toml.
+        if (close_to(ReadEntry(e, blob), e.stock) || (e.touched && close_to(ReadEntry(e, blob), e.value))) ++at_stock;
+        const double v = test_value(e);
+        test_values.push_back(v);
+        WriteEntry(e, blob, v);
+        if (close_to(ReadEntry(e, blob), v)) ++readback;
+        else bad += " " + e.source;
+      }
+      const int n = static_cast<int>(g_entries.size());
+      int vlt_entries = 0;
+      for (const Entry& e : g_entries) vlt_entries += e.blob == vault::kVlt;
+      record("flip/off-board values located (.vlt)", g_vlt.load() != nullptr,
+             std::to_string(vlt_entries) + " entries live there");
+      record("sliders start at stock (or your saved value)", at_stock == n, std::to_string(at_stock) + "/" + std::to_string(n));
+      record("sliders write + read back", readback == n, std::to_string(readback) + "/" + std::to_string(n) + bad);
+      next(2);
+      break;
+    }
+
+    case 2: {  // the game must not overwrite them, then restore stock
+      if (waited < 1.5) break;
+      std::lock_guard lock(g_mutex);
+      int kept = 0, restored = 0;
+      std::string bad;
+      for (size_t i = 0; i < g_entries.size(); ++i) {
+        Entry& e = g_entries[i];
+        if (close_to(ReadEntry(e, blob), test_values[i])) ++kept;
+        else bad += " " + e.source;
+        WriteEntry(e, blob, e.stock);
+        if (close_to(ReadEntry(e, blob), e.stock)) ++restored;
+      }
+      const int n = static_cast<int>(g_entries.size());
+      record("sliders hold for 1.5 s in gameplay", kept == n, std::to_string(kept) + "/" + std::to_string(n) + bad);
+      record("sliders restore to stock", restored == n, std::to_string(restored) + "/" + std::to_string(n));
+      // Freeze: freeze one value, then let "the game" overwrite it.
+      Entry& e = g_entries.front();
+      e.frozen = true;
+      e.value = test_value(e);
+      WriteEntry(e, blob, e.stock);  // simulated overwrite
+      next(3);
+      break;
+    }
+
+    case 3: {  // freeze rewrites within a frame
+      if (waited < 0.3) break;
+      std::lock_guard lock(g_mutex);
+      Entry& e = g_entries.front();
+      const double v = ReadEntry(e, blob);
+      record("freeze re-applies after an overwrite", close_to(v, e.value), e.source + " = " + std::to_string(v));
+      e.frozen = false;
+      e.value = e.stock;
+      WriteEntry(e, blob, e.stock);
+      preset_index = 0;
+      next(4);
+      break;
+    }
+
+    case 4: {  // every preset matches its rules
+      if (waited < 0.5) break;
+      std::lock_guard lock(g_mutex);
+      const auto& presets = Presets();
+      if (preset_index < presets.size()) {
+        const Preset& preset = presets[preset_index];
+        ApplyPresetLocked(preset);
+        int ok = 0, hits = 0;
+        std::string bad;
+        for (Entry& e : g_entries) {
+          double expect = e.stock;
+          bool hit = false;
+          for (const PresetRule& r : preset.rules) {
+            if (e.source.find(r.source_part) != std::string::npos) {
+              expect = r.multiply ? e.stock * r.value : r.value;
+              hit = true;
+            }
+          }
+          hits += hit;
+          if (close_to(ReadEntry(e, blob), expect) && e.frozen == hit) ++ok;
+          else bad += " " + e.source;
+        }
+        const int n = static_cast<int>(g_entries.size());
+        record(std::string("preset ") + preset.name, ok == n && (hits > 0 || preset.rules.empty()),
+               std::to_string(hits) + " values changed, " + std::to_string(ok) + "/" + std::to_string(n) + " correct" + bad);
+        ++preset_index;
+        at = now;
+        break;
+      }
+      ApplyPresetLocked(presets.front());  // Stock
+      int stock = 0;
+      for (Entry& e : g_entries) stock += close_to(ReadEntry(e, blob), e.stock) && !e.frozen;
+      record("Stock preset resets everything", stock == static_cast<int>(g_entries.size()),
+             std::to_string(stock) + "/" + std::to_string(g_entries.size()));
+      next(5);
+      break;
+    }
+
+    case 5: {  // saved values: save, reset, re-apply
+      std::lock_guard lock(g_mutex);
+      Entry& e = g_entries.front();
+      const double v = test_value(e);
+      e.value = v;
+      e.touched = true;
+      e.frozen = true;
+      SaveUser();
+      e.value = e.stock;
+      e.touched = false;
+      e.frozen = false;
+      WriteEntry(e, blob, e.stock);
+      ApplySavedLocked(blob);
+      const bool ok = close_to(ReadEntry(e, blob), v) && e.frozen;
+      record("saved values round-trip (user.toml)", ok, e.source + " -> " + std::to_string(ReadEntry(e, blob)) +
+                                                           (e.frozen ? " frozen" : " not frozen"));
+      restore_all_locked();
+      speed_index = 0;
+      pr::SetGameSpeed(0.25f);
+      next(6);
+      break;
+    }
+
+    case 6: {  // game speed: measured sim update rate
+      static const float speeds[] = {0.25f, 0.5f, 1.0f, 2.0f};
+      static int retries = 0;
+      if (waited < 4) break;
+      const double rate = (st.marker_updates - updates_at) / waited;
+      const double expect = 60.0 * speeds[speed_index];
+      // The marker update pauses while the game is busy (a reset after the
+      // slider test, a teleport): re-measure instead of failing on a stall.
+      // Zero updates = the game is paused (e.g. its window lost focus): wait
+      // that out (up to ~30 s) without spending a retry.
+      static int paused_waits = 0;
+      if (rate == 0 && paused_waits < 7) {
+        ++paused_waits;
+        REXLOG_INFO("trainer audit: speed {:.2f}x: game paused, waiting", speeds[speed_index]);
+        next(6);
+        break;
+      }
+      paused_waits = 0;
+      if (std::fabs(rate - expect) > expect * 0.15 && retries < 3) {
+        ++retries;
+        REXLOG_INFO("trainer audit: speed {:.2f}x measured {:.1f}/s, re-measuring", speeds[speed_index], rate);
+        next(6);
+        break;
+      }
+      retries = 0;
+      char detail[96];
+      std::snprintf(detail, sizeof(detail), "%.2fx: %.1f updates/s (expected %.0f), timer %d Hz",
+                    speeds[speed_index], rate, expect, st.timer_hz_live);
+      record(std::string("game speed ") + detail, std::fabs(rate - expect) <= expect * 0.15, "");
+      if (++speed_index < 4) {
+        pr::SetGameSpeed(speeds[speed_index]);
+        next(6);
+      } else {
+        pr::SetGameSpeed(1.0f);
+        for (int i = 0; i < pr::kSlots; ++i) pr::Clear(i);
+        pr::SetAutoCapture(false);
+        pr::SaveHere(0);
+        next(7);
+      }
+      break;
+    }
+
+    case 7:  // save here
+      if (waited < 1) break;
+      record("slot save here", pr::Slot(0).valid, st.last_event);
+      pr::CaptureGameMarker(2);  // the game marker now holds slot 1's spot
+      next(8);
+      break;
+
+    case 8:  // copy game marker
+      if (waited < 1) break;
+      record("slot copy game marker", pr::Slot(2).valid, st.last_event);
+      pr::Clear(2);
+      record("slot clear", !pr::Slot(2).valid, "");
+      pr::SelectSlot(1);
+      pr::SetAutoCapture(true);
+      pr::DebugForceGameSet();  // the game places its own marker (LB + d-pad down)
+      next(9);
+      break;
+
+    case 9:  // auto-capture into the selected slot
+      if (waited < 1) break;
+      record("slot auto-capture from the game marker", pr::Slot(1).valid, st.last_event);
+      pr::SetAutoCapture(false);
+      pr::SelectSlot(0);
+      pr::DebugOffsetSlot(0, 4.0f);
+      pr::GoTo(0);
+      next(10);
+      break;
+
+    case 10:  // go to a slot 4 m away
+      if (waited < 5) break;
+      record("slot go (teleport through the game's return)",
+             st.last_event.find("going to slot 1") != std::string::npos &&
+                 st.last_event.find("timed out") == std::string::npos,
+             st.last_event);
+      pr::SaveHere(0);  // re-save where we landed: the auto-return target
+      next(11);
+      break;
+
+    case 11: {  // force a real bail by zeroing the bail thresholds (frozen)
+      if (waited < 1.5) break;
+      std::lock_guard lock(g_mutex);
+      int zeroed = 0;
+      for (Entry& e : g_entries) {
+        if (e.group != "Bails" || e.source.find("Wipeout_") == std::string::npos ||
+            e.source.find("FallingMinUpY") != std::string::npos ||
+            e.source.find("YAcceleration") != std::string::npos) {
+          continue;
+        }
+        e.value = 0;
+        e.frozen = true;
+        WriteEntry(e, blob, 0);
+        ++zeroed;
+      }
+      REXLOG_INFO("trainer audit: zeroed {} bail thresholds to force a bail", zeroed);
+      pr::SelectSlot(0);
+      pr::SetAutoReturn(true, 1.0f);
+      states_seen.clear();
+      bail_seen = false;
+      next(13);
+      break;
+    }
+
+    case 13: {  // bail, then auto-return
+      {
+        static clock::time_point last_trace;
+        static uint64_t last_updates = 0;
+        if (std::chrono::duration<double>(now - last_trace).count() >= 0.5) {
+          REXLOG_INFO("trainer audit: trace t={:.1f}s state={} marker_updates+{} event='{}'", waited,
+                      st.player_state, st.marker_updates - last_updates, st.last_event);
+          last_trace = now;
+          last_updates = st.marker_updates;
+        }
+      }
+      const bool returned = st.auto_returns > 0;
+      {
+        // Standing still does not always bail: provoke one with a short
+        // teleport every 5 s while the thresholds are zeroed.
+        static double kicked_at = 0;
+        if (!bail_seen && waited - kicked_at >= 5) {
+          kicked_at = waited;
+          pr::DebugOffsetSlot(0, 3.0f);
+          pr::GoTo(0);
+        }
+        if (waited < 1) kicked_at = 0;
+      }
+      if (!returned && waited < 30) break;
+      std::string seen;
+      for (int32_t s : states_seen) seen += " " + std::to_string(s);
+      if (!bail_seen) {
+        // Not a trainer failure: the audit could not make the skater bail.
+        REXLOG_INFO("trainer audit: SKIP bail + auto-return (no bail happened in 30 s; states seen:{})", seen);
+        skipped.push_back("bail + auto-return (no bail happened in 30 s)");
+      } else {
+        record("Bails sliders cause a bail at 0 (state 300 seen)", true, "states seen:" + seen);
+        record("auto-return to the selected slot after the bail", returned,
+               std::to_string(st.auto_returns) + " auto-return(s), last: " + st.last_event);
+      }
+      next(14);
+      break;
+    }
+
+    case 14: {  // clean up and report
+      if (waited < 3) break;
+      pr::SetAutoReturn(false, 1.0f);
+      for (int i = 0; i < pr::kSlots; ++i) pr::Clear(i);
+      pr::SetGameSpeed(1.0f);
+      {
+        std::lock_guard lock(g_mutex);
+        restore_all_locked();
+        std::error_code ec;
+        if (had_user) {
+          std::ofstream(UserPath()) << user_backup;
+        } else {
+          std::filesystem::remove(UserPath(), ec);
+        }
+        if (REXCVAR_GET(skate3_trainer_apply_saved) && had_user) ApplySavedLocked(blob);
+      }
+      int pass = 0;
+      std::string report = "SK8TRAINER audit\n";
+      for (const Result& r : results) {
+        pass += r.pass;
+        report += std::string(r.pass ? "PASS  " : "FAIL  ") + r.name + (r.detail.empty() ? "" : "  -- " + r.detail) + "\n";
+      }
+      for (const std::string& sk : skipped) report += "SKIP  " + sk + "\n";
+      report += std::to_string(pass) + "/" + std::to_string(results.size()) + " checks passed\n";
+      std::error_code ec;
+      std::filesystem::create_directories(TrainerFolder(), ec);
+      std::ofstream(TrainerFolder() / "audit-report.txt") << report;
+      REXLOG_INFO("trainer audit: done {}/{} passed (report: {})", pass, results.size(),
+                  (TrainerFolder() / "audit-report.txt").string());
+      next(15);
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 // ================================================================ public
@@ -741,7 +1316,17 @@ void Tick(uint8_t* base) {
   static uint32_t frame = 0;
   if (++frame % 120 == 0) {
     uint8_t* blob = g_blob.load();
-    if (blob && !AnchorsMatch(blob, nullptr)) {
+    bool inline_moved = false;
+    {
+      std::lock_guard lock(g_mutex);
+      for (const Entry& e : g_entries) {
+        if (e.blob != vault::kVlt || !e.direct) continue;
+        uint8_t key[8];
+        for (int k = 0; k < 8; ++k) key[k] = uint8_t(e.key >> (56 - 8 * k));
+        if (!HostReadable(e.direct - 8, 12) || std::memcmp(e.direct - 8, key, 8) != 0) inline_moved = true;
+      }
+    }
+    if ((blob && !AnchorsMatch(blob, nullptr)) || inline_moved) {
       REXLOG_INFO("trainer: vault moved or unloaded, rescanning");
       g_blob = nullptr;
       g_locate = Locate::kIdle;
@@ -760,6 +1345,7 @@ void Tick(uint8_t* base) {
   }
   practice::Tick(base);
   if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
+  if (REXCVAR_GET(skate3_trainer_audit)) Audit();
 }
 
 TrainerDialog::TrainerDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
@@ -879,7 +1465,8 @@ void TrainerDialog::OnDraw(ImGuiIO& io) {
             float v = static_cast<float>(e.value);
             const float speed = static_cast<float>(std::max(std::fabs(e.stock) * 0.01, (e.max - e.min) / 1000.0));
             changed = ImGui::DragFloat(e.label.c_str(), &v, speed, static_cast<float>(e.min),
-                                       static_cast<float>(e.max), "%.3f");
+                                       static_cast<float>(e.max),
+                                       e.type == Type::kGraphScale ? "%.2fx" : "%.3f");
             e.value = v;
           }
           if (changed) {
