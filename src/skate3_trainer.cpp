@@ -594,7 +594,11 @@ const std::vector<Preset>& Presets() {
 
 void ApplyPresetLocked(const Preset& preset) {
   uint8_t* blob = g_blob.load();
-  if (preset.rules.empty()) g_perfect_finish = false;
+  if (preset.rules.empty()) {
+    g_perfect_finish = false;
+    practice::SetNeverBail(false);
+    SaveOptions();
+  }
   if (std::string(preset.name) == "Locked In" || std::string(preset.name) == "Never Bail") {
     practice::SetNeverBail(true);
     SaveOptions();
@@ -683,6 +687,31 @@ void LinkModesLocked(const Entry& src) {
     e.touched = true;
     if (blob) WriteEntry(e, blob, e.value);
   }
+}
+
+// Never bail = the Never Bail value set (every bail threshold out of reach,
+// the way other Skate 3 trainers do it: the game never decides to bail, so
+// landings look normal) plus the state-machine block as a backstop.
+void SetNeverBailLocked(bool on) {
+  practice::SetNeverBail(on);
+  for (const Preset& p : Presets()) {
+    if (std::string(p.name) != "Never Bail") continue;
+    if (on) {
+      ApplyPresetLocked(p);
+    } else {
+      uint8_t* blob = g_blob.load();
+      for (Entry& e : g_entries) {
+        for (const PresetRule& r : p.rules) {
+          if (e.source.find(r.source_part) == std::string::npos) continue;
+          e.value = e.stock;
+          e.frozen = e.touched = false;
+          if (blob) WriteEntry(e, blob, e.stock);
+        }
+      }
+      SaveUser();
+    }
+  }
+  SaveOptions();
 }
 
 // XInput-style bit names on top of the runtime's portable pad state.
@@ -860,10 +889,7 @@ void DrawPracticeLocked(int pad_row) {
   float delay = pr::AutoReturnDelay();
   {
     bool never = pr::NeverBail();
-    if (ImGui::Checkbox("NEVER BAIL (the game is not allowed to start a bail)", &never)) {
-      pr::SetNeverBail(never);
-      SaveOptions();
-    }
+    if (ImGui::Checkbox("NEVER BAIL", &never)) SetNeverBailLocked(never);
     ImGui::SameLine();
     ImGui::TextDisabled("%d refused", pr::GetStatus().bails_blocked);
   }
@@ -1627,6 +1653,18 @@ void Tick(uint8_t* base) {
     }
     was_on = g_perfect_finish;
     was_grab = grab;
+  }
+  {
+    // Never bail was on last time: put its values back once the vault is live.
+    static bool applied = false;
+    if (!applied && g_blob.load() && REXCVAR_GET(skate3_trainer_apply_saved)) {
+      applied = true;
+      LoadOptions();
+      if (practice::NeverBail()) {
+        std::lock_guard lock(g_mutex);
+        SetNeverBailLocked(true);
+      }
+    }
   }
   if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
   if (REXCVAR_GET(skate3_trainer_audit)) Audit();
