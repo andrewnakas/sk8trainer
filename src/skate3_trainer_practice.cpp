@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <set>
 
 #include "generated/skate3_init.h"
 
@@ -75,6 +76,27 @@ uint32_t g_timer = 0;
 int32_t g_requested_hz = 60;
 int g_timer_hz_live = 0;
 uint64_t g_marker_updates = 0;
+
+// Scripted pad (spin test).
+struct TestPad {
+  bool active = false;
+  int16_t lx = 0, ly = 0, rx = 0, ry = 0;
+  uint16_t buttons = 0;
+  uint8_t lt = 0, rt = 0;
+};
+TestPad g_pad;
+float g_last_up[3] = {0, 1, 0};
+uint32_t g_pad_packet = 1;
+
+// Skater transform tracking (spin test): the 4x4 matrix inside the actor,
+// found by matching the position the game writes into its session marker.
+bool g_measure_on = false;
+uint32_t g_track_actor = 0, g_track_addr = 0;
+bool g_track_search = false;
+Measure g_measure;
+float g_last_yaw = 0, g_base_y = 0;
+bool g_have_yaw = false;
+std::set<int32_t> g_measure_states;
 
 // Set only while the game's own marker update runs, so forced actions never
 // leak into any other input query.
@@ -132,12 +154,22 @@ float Be32f(const uint8_t* p) {
   return f;
 }
 
+uint32_t g_last_actor = 0;
+
+float LoadF(uint8_t* base, uint32_t addr) {
+  const uint32_t v = REX_LOAD_U32(addr);
+  float f;
+  std::memcpy(&f, &v, 4);
+  return f;
+}
+
 int32_t LocalPlayerState(PPCContext& ctx, uint8_t* base, uint32_t self) {
   PPCContext call = ctx;
   call.r1.u64 = uint64_t(ctx.r1.u32 - 0x1000);
   call.r3.u64 = REX_LOAD_U32(self + 4);
   sub_82897730(call, base);
   const uint32_t actor = call.r3.u32;
+  g_last_actor = actor;
   if (!GuestReadable(actor + 44, 4)) return -1;
   const uint32_t iface = actor + 44;
   const uint32_t vtable = REX_LOAD_U32(iface);
@@ -156,6 +188,41 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
   ++g_marker_updates;
   g_status.game_marker_set = REX_LOAD_U8(marker + kMarkerHas) != 0;
   g_status.use_gate = REX_LOAD_U8(marker + kMarkerUseGate) != 0;
+
+  if (g_measure_on && !g_auto_return) g_status.player_state = LocalPlayerState(ctx, base, self);
+  if (g_measure_on) {
+    ++g_measure.ticks;
+    if (g_status.player_state != 100) ++g_measure.air_ticks;
+    g_measure_states.insert(g_status.player_state);
+    if (!g_track_addr && g_force_return_frames == 0 && g_pending_goto < 0) g_force_set = true;  // marker follows the skater
+  }
+  if (g_measure_on && g_track_addr && g_last_actor == g_track_actor && GuestReadable(g_track_addr, 64)) {
+    const float yaw = std::atan2(LoadF(base, g_track_addr + 8), LoadF(base, g_track_addr)) * 57.29578f;
+    const float y = LoadF(base, g_track_addr + 52);
+    const float up[3] = {LoadF(base, g_track_addr + 16), LoadF(base, g_track_addr + 20), LoadF(base, g_track_addr + 24)};
+    if (g_have_yaw) {
+      const float dot = std::clamp(up[0] * g_last_up[0] + up[1] * g_last_up[1] + up[2] * g_last_up[2], -1.0f, 1.0f);
+      g_measure.tumble_total += std::acos(dot) * 57.29578f;
+      if (g_status.player_state != 100) g_measure.air_tumble += std::acos(dot) * 57.29578f;
+    }
+    std::memcpy(g_last_up, up, sizeof(up));
+    if (g_have_yaw) {
+      float d = yaw - g_last_yaw;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      g_measure.yaw_total += d;
+      if (g_status.player_state != 100) g_measure.air_yaw += d;
+      g_measure.max_rise = std::max(g_measure.max_rise, y - g_base_y);
+    } else {
+      g_base_y = y;
+    }
+    g_last_yaw = yaw;
+    g_have_yaw = true;
+    g_measure.tracking = true;
+  } else if (g_measure_on && g_last_actor != g_track_actor) {
+    g_track_addr = 0;
+    g_measure.tracking = false;
+  }
 
   if (g_auto_return) {
     g_status.player_state = LocalPlayerState(ctx, base, self);
@@ -202,8 +269,58 @@ void AfterMarkerUpdate(uint8_t* base, uint32_t self, uint32_t marker) {
       g_force_return_frames = 0;
     }
   }
+  if (g_force_set && g_measure_on && has && g_pending_save < 0) {
+    static float last = 0;
+    static bool have = false;
+    const float yaw = std::atan2(LoadF(base, marker + kMarkerXform + 8), LoadF(base, marker + kMarkerXform)) * 57.29578f;
+    if (have && g_measure.marker_sets > 0) {
+      float d = yaw - last;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      g_measure.marker_yaw_total += d;
+    }
+    last = yaw;
+    have = true;
+    ++g_measure.marker_sets;
+    g_last_seen = ReadXform(base, marker);
+  }
   if (g_force_set) {
     g_force_set = false;
+    if (has && g_measure_on && !g_track_addr && g_last_actor && g_force_return_frames == 0) {
+      // Find the skater matrix: the marker's position, 48 bytes into a 4x4
+      // whose first row is a unit vector. Actor first, then one pointer deep.
+      const float px = LoadF(base, marker + kMarkerXform + 48), py = LoadF(base, marker + kMarkerXform + 52),
+                  pz = LoadF(base, marker + kMarkerXform + 56);
+      auto scan = [&](uint32_t from, uint32_t size) -> uint32_t {
+        if (!GuestReadable(from, size)) return 0;
+        for (uint32_t o = 48; o + 16 <= size; o += 4) {
+          if (std::fabs(LoadF(base, from + o) - px) > 0.3f || std::fabs(LoadF(base, from + o + 4) - py) > 1.5f ||
+              std::fabs(LoadF(base, from + o + 8) - pz) > 0.3f) {
+            continue;
+          }
+          const float a = LoadF(base, from + o - 48), b = LoadF(base, from + o - 44), c = LoadF(base, from + o - 40);
+          const float len = a * a + b * b + c * c;
+          if (len > 0.9f && len < 1.1f) return from + o - 48;
+        }
+        return 0;
+      };
+      uint32_t found = scan(g_last_actor, 0x2000);
+      auto is_ptr = [](uint32_t p) { return p >= 0x40000000 && p < 0x7F000000 && !(p & 3); };
+      for (uint32_t o = 0; !found && o < 0x800; o += 4) {
+        if (!GuestReadable(g_last_actor + o, 4)) break;
+        const uint32_t ptr = REX_LOAD_U32(g_last_actor + o);
+        if (!is_ptr(ptr) || !GuestReadable(ptr, 0x800)) continue;
+        found = scan(ptr, 0x800);
+        for (uint32_t o2 = 0; !found && o2 < 0x200; o2 += 4) {
+          const uint32_t p2 = REX_LOAD_U32(ptr + o2);
+          if (is_ptr(p2)) found = scan(p2, 0x400);
+        }
+      }
+      g_track_addr = found;
+      g_track_actor = g_last_actor;
+      REXLOG_INFO("trainer: skater matrix {} (actor 0x{:08X}, addr 0x{:08X})", found ? "found" : "NOT found",
+                  g_last_actor, found);
+    }
     if (has && g_pending_save >= 0) {
       CopyOut(base, marker, g_slots[g_pending_save]);
       g_last_seen = g_slots[g_pending_save].xform;
@@ -276,6 +393,29 @@ void DebugOffsetSlot(int slot, float dx, float dy) {
   };
   add(48, dx);
   add(52, dy);
+}
+
+void DebugSetPad(bool active, float lx, float ly, float rx, float ry, uint16_t buttons, uint8_t lt, uint8_t rt) {
+  std::lock_guard lock(g_mutex);
+  auto s16 = [](float v) { return static_cast<int16_t>(std::clamp(v, -1.0f, 1.0f) * 32767.0f); };
+  g_pad = {active, s16(lx), s16(ly), s16(rx), s16(ry), buttons, lt, rt};
+}
+
+void DebugResetMeasure() {
+  std::lock_guard lock(g_mutex);
+  g_measure_on = true;
+  const bool tracking = g_measure.tracking;
+  g_measure = {};
+  g_measure.tracking = tracking;
+  g_have_yaw = false;
+  g_measure_states.clear();
+}
+
+Measure DebugMeasure() {
+  std::lock_guard lock(g_mutex);
+  Measure m = g_measure;
+  for (int32_t s : g_measure_states) m.states += " " + std::to_string(s);
+  return m;
 }
 
 void DebugForceGameSet() {
@@ -407,6 +547,24 @@ extern "C" REX_FUNC(sub_82898FC8) {
   __imp__sub_82898FC8(ctx, base);
   t_in_marker_update = false;
   if (marker) AfterMarkerUpdate(base, self, marker);
+}
+
+// XInputGetState(user, state*) wrapper: scripted pad for the spin test.
+extern "C" REX_FUNC(__imp__sub_82EE22C0);
+extern "C" REX_FUNC(sub_82EE22C0) {
+  const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
+  __imp__sub_82EE22C0(ctx, base);
+  std::lock_guard lock(g_mutex);
+  if (!g_pad.active || user != 0 || !state) return;
+  REX_STORE_U32(state, ++g_pad_packet);
+  REX_STORE_U16(state + 4, g_pad.buttons);
+  REX_STORE_U8(state + 6, g_pad.lt);
+  REX_STORE_U8(state + 7, g_pad.rt);
+  REX_STORE_U16(state + 8, static_cast<uint16_t>(g_pad.lx));
+  REX_STORE_U16(state + 10, static_cast<uint16_t>(g_pad.ly));
+  REX_STORE_U16(state + 12, static_cast<uint16_t>(g_pad.rx));
+  REX_STORE_U16(state + 14, static_cast<uint16_t>(g_pad.ry));
+  ctx.r3.u64 = 0;
 }
 
 // Input action query (bool). Forced only inside the marker update.

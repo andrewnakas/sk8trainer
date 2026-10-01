@@ -15,6 +15,7 @@ function(sk8trainer_add target)
         "${SK8TRAINER_ROOT}/src/skate3_trainer.cpp"
         "${SK8TRAINER_ROOT}/src/skate3_trainer_practice.cpp"
         "${SK8TRAINER_ROOT}/src/skate3_trainer_vault.cpp"
+        "${SK8TRAINER_ROOT}/src/skate3_trainer_watch.cpp"
     )
     target_include_directories(${target} PRIVATE "${SK8TRAINER_ROOT}/src")
     target_compile_definitions(${target} PRIVATE SKATE3_TRAINER=1)

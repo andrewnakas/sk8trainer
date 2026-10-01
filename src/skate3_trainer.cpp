@@ -1,6 +1,7 @@
 #include "skate3_trainer.h"
 #include "skate3_trainer_practice.h"
 #include "skate3_trainer_vault.h"
+#include "skate3_trainer_watch.h"
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +44,12 @@ REXCVAR_DEFINE_BOOL(skate3_trainer_audit, false, "Skate 3",
                     "SK8TRAINER full audit: once in gameplay, test every slider, freeze, preset, "
                     "saved values, game speed, marker slot and auto-return; logs 'trainer audit:' "
                     "lines and writes <user data>/trainer/audit-report.txt. Restores everything after.");
+REXCVAR_DEFINE_BOOL(skate3_trainer_spintest, false, "Skate 3",
+                    "SK8TRAINER diagnostic: scripted ollie + spin per value group; logs 'trainer "
+                    "spintest:' lines with degrees turned.");
+REXCVAR_DEFINE_BOOL(skate3_trainer_watch, false, "Skate 3",
+                    "SK8TRAINER diagnostic (Windows): log which game functions read the Spin and "
+                    "Flips values while you play ('trainer watch:' lines every 2 s). Slows the game.");
 REXCVAR_DEFINE_BOOL(skate3_trainer_apply_saved, true, "Skate 3",
                     "Re-apply the saved trainer values (<user data>/trainer/user.toml) whenever the vault is found");
 
@@ -519,22 +526,18 @@ struct Preset {
 };
 
 const std::vector<Preset>& Presets() {
+  // Presets stack: each one changes only its own values. Stock resets all.
   static const std::vector<Preset> presets = {
       {"Stock", "Every value back to the game's own tuning", {}},
-      {"Mega Pop", "Ollie heights x3",
-       {{"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}}},
+      {"Mega Pop", "Every ollie / jump height x3", {{"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}, {"#0F2473E9125079F0", true, 3}, {"#1B3E9F9C836D287D", true, 3}, {"#703829BD711E54DE", true, 3}, {"#B2B1170AFFC8AC69", true, 3}, {"#BE3F74F978D777E5", true, 3}}},
       {"Moon", "Pop x2.5, floaty ragdolls, higher hippy jumps",
        {{"/JumpMinHeight", true, 2.5}, {"/JumpMaxHeight", true, 2.5},
         {"physics_biped/default/JumpHeight", true, 2.5},
         {"Wipeout_AirYAcceleration", true, 0.3}, {"Wipeout_GroundYAcceleration", true, 0.3}}},
-      {"No Bail", "Landing / contact bail thresholds x100 (freezes them)",
-       {{"Wipeout_AirMaxSpeedIntoGround", true, 100}, {"Wipeout_AirMaxSpeedIntoStairs", true, 100},
-        {"Wipeout_AirSkeletonMaxContact", true, 100}, {"Wipeout_GroundSkeletonMaxContact", true, 100},
-        {"Wipeout_GroundBalanceTotal", true, 100}}},
-      {"Spin & Flip", "Body spins x2.5, faster flips, higher spin caps",
-       {{"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5},
-        {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3},
-        {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}}},
+      {"Never Bail", "Every bail threshold out of reach, bad-landing check off", {{"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}}},
+      {"Spin & Flip", "Easy body spins on (the real spin lever, +60%), higher spin caps", {{"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5}, {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1}, {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}}},
+      {"Fast", "Push top speed x4, push power x4, run speed x3", {{"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4}, {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4}, {"SpeedVsInput", false, 3}, {"#CE8C0D4C6B92FD27", false, 3}}},
+      {"Big Air", "Mega Pop + Spin & Flip + Fast + Never Bail", {{"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}, {"#0F2473E9125079F0", true, 3}, {"#1B3E9F9C836D287D", true, 3}, {"#703829BD711E54DE", true, 3}, {"#B2B1170AFFC8AC69", true, 3}, {"#BE3F74F978D777E5", true, 3}, {"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5}, {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1}, {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}, {"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4}, {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4}, {"SpeedVsInput", false, 3}, {"#CE8C0D4C6B92FD27", false, 3}, {"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}}},
       {"THPS", "Fast spins, easy body spins, auto push",
        {{"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1},
         {"AutoPushEnabled", false, 1}, {"MaxPushableSpeed", true, 2}}},
@@ -553,6 +556,7 @@ void ApplyPresetLocked(const Preset& preset) {
         hit = true;
       }
     }
+    if (!hit && !preset.rules.empty()) continue;  // presets stack; Stock resets
     e.value = v;
     e.frozen = hit;
     e.touched = hit;
@@ -1028,6 +1032,7 @@ void Audit() {
       const auto& presets = Presets();
       if (preset_index < presets.size()) {
         const Preset& preset = presets[preset_index];
+        ApplyPresetLocked(presets.front());
         ApplyPresetLocked(preset);
         int ok = 0, hits = 0;
         std::string bad;
@@ -1264,6 +1269,123 @@ void Audit() {
   }
 }
 
+
+// Spin test (skate3_trainer_spintest): scripted ollie + held left stick, with
+// one group of values changed per trial; logs degrees turned in the air.
+void SpinTest() {
+  namespace pr = practice;
+  struct Change {
+    const char* part;
+    bool multiply;
+    double v;
+  };
+  struct Trial {
+    const char* name;
+    float lx, ly;     // left stick held in the air
+    uint8_t lt, rt;   // triggers held in the air
+    uint16_t buttons;
+    std::vector<Change> changes;
+    bool pre = false;  // also hold the stick / buttons through the crouch and pop
+  };
+#define POP {"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}
+#define SPIN {"PropBodySpinVsTime", false, 3}, {"#D7C6855B7814D048", false, 3}, {"MaxSpinSpeed", true, 3}
+#define FLIP {"FlipMaxSpeed", true, 4}, {"FlipScalar", true, 4}
+  static const std::vector<Trial> trials = {
+      {"spin stock", -1, 0, 0, 0, 0, {POP}},
+      {"spin MaxAuto x4", -1, 0, 0, 0, 0, {POP, {"MaxAutoBodySpinSpeed", true, 4}}},
+      {"spin Easy only", -1, 0, 0, 0, 0, {POP, {"EasyBodySpins", false, 1}}},
+      {"spin Easy + MaxAuto x10", -1, 0, 0, 0, 0, {POP, {"EasyBodySpins", false, 1}, {"MaxAutoBodySpinSpeed", true, 10}}},
+      {"PRE RB + LS down", 0, -1, 0, 0, 0x0200, {POP}, true},
+      {"PRE RB + LS up", 0, 1, 0, 0, 0x0200, {POP}, true},
+      {"PRE LS down only", 0, -1, 0, 0, 0, {POP}, true},
+      {"PRE LS up only", 0, 1, 0, 0, 0, {POP}, true},
+      {"PRE RT + LS down", 0, -1, 0, 255, 0, {POP}, true},
+      {"PRE LB + LS down", 0, -1, 0, 0, 0x0100, {POP}, true},
+      {"PRE LS down perfect", 0, -1, 0, 0, 0, {POP, {"PerfectBodyFlips", false, 1}, {"EasyBodySpins", false, 1}}, true},
+      {"PRE RB + LS down perfect", 0, -1, 0, 0, 0x0200, {POP, {"PerfectBodyFlips", false, 1}, {"EasyBodySpins", false, 1}}, true},
+  };
+  static int step = 0;
+  static size_t trial = 0;
+  static uint64_t tick0 = 0;
+  uint8_t* blob = g_blob.load();
+  const pr::Status st = pr::GetStatus();
+  const uint64_t t = st.marker_updates - tick0;
+  auto next = [&](int n) {
+    step = n;
+    tick0 = st.marker_updates;
+  };
+  auto set_all_stock = [&]() {
+    std::lock_guard lock(g_mutex);
+    for (Entry& e : g_entries) {
+      e.frozen = false;
+      e.value = e.stock;
+      WriteEntry(e, blob, e.stock);
+    }
+  };
+  switch (step) {
+    case 0:
+      if (!blob || !st.marker_seen || t < 240) break;
+      pr::DebugResetMeasure();
+      pr::SetAutoCapture(false);
+      pr::SaveHere(0);
+      next(1);
+      break;
+    case 1:  // apply the trial's values, go back to the start spot
+      if (t < 90) break;
+      if (trial >= trials.size()) {
+        set_all_stock();
+        pr::DebugSetPad(false, 0, 0, 0, 0);
+        REXLOG_INFO("trainer spintest: done");
+        next(99);
+        break;
+      }
+      set_all_stock();
+      {
+        std::lock_guard lock(g_mutex);
+        for (Entry& e : g_entries) {
+          for (const Change& c : trials[trial].changes) {
+            if (e.source.find(c.part) == std::string::npos) continue;
+            e.value = c.multiply ? e.stock * c.v : c.v;
+            WriteEntry(e, blob, e.value);
+          }
+        }
+      }
+      pr::GoTo(0);
+      next(2);
+      break;
+    case 2:  // settle, then crouch (right stick down)
+      if (t < 420) break;
+      if (trials[trial].pre) pr::DebugSetPad(true, trials[trial].lx, trials[trial].ly, 0, -1, trials[trial].buttons, trials[trial].lt, trials[trial].rt);
+      else pr::DebugSetPad(true, 0, 0, 0, -1);
+      next(3);
+      break;
+    case 3:  // pop (right stick up) and hold the left stick left
+      if (t < 30) break;
+      if (trials[trial].pre) pr::DebugSetPad(true, trials[trial].lx, trials[trial].ly, 0, 1, trials[trial].buttons, trials[trial].lt, trials[trial].rt);
+      else pr::DebugSetPad(true, 0, 0, 0, 1);
+      pr::DebugResetMeasure();
+      next(4);
+      break;
+    case 4:
+      if (t < 8) break;
+      pr::DebugSetPad(true, trials[trial].lx, trials[trial].ly, 0, 0, trials[trial].buttons, trials[trial].lt, trials[trial].rt);
+      next(5);
+      break;
+    case 5: {  // through the air and the landing
+      if (t < 200) break;
+      const pr::Measure m = pr::DebugMeasure();
+      REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  air {:3}/{} ticks  tracking {}  states{}",
+                  trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.air_ticks, m.ticks, m.tracking, m.states);
+      pr::DebugSetPad(true, 0, 0, 0, 0);
+      ++trial;
+      next(1);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 // ================================================================ public
@@ -1344,8 +1466,28 @@ void Tick(uint8_t* base) {
     }
   }
   practice::Tick(base);
+  if (REXCVAR_GET(skate3_trainer_watch) && g_blob.load()) {
+    static bool armed = false;
+    if (!armed) {
+      armed = true;
+      std::vector<watch::Target> targets;
+      std::lock_guard lock(g_mutex);
+      for (Entry& e : g_entries) {
+        if (e.group != "Spin" && e.group != "Flips") continue;
+        const size_t size = e.type == Type::kGraphScale ? 64 : 4;
+        if (e.blob == vault::kVlt) {
+          for (uint8_t* c : e.copies) targets.push_back({e.source, c, size});
+        } else {
+          targets.push_back({e.source, g_blob.load() + e.offset, size});
+        }
+      }
+      watch::Arm(targets);
+    }
+    if (frame % 120 == 60) watch::Report();
+  }
   if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
   if (REXCVAR_GET(skate3_trainer_audit)) Audit();
+  if (REXCVAR_GET(skate3_trainer_spintest)) SpinTest();
 }
 
 TrainerDialog::TrainerDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}

@@ -218,9 +218,9 @@ constexpr Curated kCurated[] = {
     {"Biped jump speed scalar", "Pop & Jump", "physics_biped", "default", "JumpSpeedScalar", 0, 10},
     {"Gravity (speed cons.)", "Gravity & Speed", "physics_speed_conservation", "default", "Gravity", -50, 50},
     {"Max gravity accel", "Gravity & Speed", "physics_speed_conservation", "default", "MaxGravityAcceleration", 0, 100},
-    {"Max pushable speed", "Gravity & Speed", "physics_push", "default", "MaxPushableSpeed", 0, 100},
-    {"Push dV start", "Gravity & Speed", "physics_mode", nullptr, "MaxPushDVStart", 0, 20},
-    {"Push dV end", "Gravity & Speed", "physics_mode", nullptr, "MaxPushDVEnd", 0, 20},
+    {"Max pushable speed", "Gravity & Speed", "physics_push", "default", "MaxPushableSpeed", 0, 500},
+    {"Push dV start", "Gravity & Speed", "physics_mode", nullptr, "MaxPushDVStart", 0, 100},
+    {"Push dV end", "Gravity & Speed", "physics_mode", nullptr, "MaxPushDVEnd", 0, 100},
     {"Motor top speed", "Gravity & Speed", "physics_mode", nullptr, "MotorTopSpeed", 0, 100},
     {"Auto push", "Gravity & Speed", "physics_mode", nullptr, "AutoPushEnabled", 0, 1},
     {"Pump effect", "Gravity & Speed", "physics_mode", nullptr, "PumpEffectFactor", 0, 200},
@@ -241,11 +241,45 @@ constexpr Curated kCurated[] = {
     {"Bail: ground skeleton contact", "Bails", "physics_wipeout", "default", "Wipeout_GroundSkeletonMaxContact", 0, 1000},
     {"Bail: ground balance total", "Bails", "physics_wipeout", "default", "Wipeout_GroundBalanceTotal", 0, 1000},
     {"Bail: vehicle contact", "Bails", "physics_wipeout", "default", "Wipeout_GroundVehicleContact", 0, 1000},
-    {"Bail: falling min up-Y", "Bails", "physics_wipeout", "default", "Wipeout_AirFallingMinUpY", -1, 1},
+    {"Bail: falling min up-Y", "Bails", "physics_wipeout", "default", "Wipeout_AirFallingMinUpY", -10, 1},
     {"Ragdoll gravity (air Y acc)", "Bails", "physics_wipeout", "default", "Wipeout_AirYAcceleration", -200, 500},
     {"Ragdoll gravity (ground Y)", "Bails", "physics_wipeout", "default", "Wipeout_GroundYAcceleration", -200, 500},
     {"Ragdoll inv-mass factor", "Bails", "physics_wipeout", "default", "RagdollInvMassFactor", 0, 20},
     {"Auto-reset after bail (s)", "Bails", "physics_wipeout", "default", "TeleportMinTimeForAutoReset", 0, 60},
+    {"Bail: AirMaxSquash", "Bails", "physics_wipeout", "default", "Wipeout_AirMaxSquash", 0, 100000},
+    {"Bail: AirMaxSpeedIntoCollisionNearGrind", "Bails", "physics_wipeout", "default", "Wipeout_AirMaxSpeedIntoCollisionNearGrind", 0, 100000},
+    {"Bail: GroundMaxSquashCoffin", "Bails", "physics_wipeout", "default", "Wipeout_GroundMaxSquashCoffin", 0, 100000},
+    {"Bail: GroundMaxSquash", "Bails", "physics_wipeout", "default", "Wipeout_GroundMaxSquash", 0, 100000},
+    {"Bail: OB_MaxSquash", "Bails", "physics_wipeout", "default", "Wipeout_OB_MaxSquash", 0, 100000},
+    {"Bail: AirSkeletonMaxContactArms", "Bails", "physics_wipeout", "default", "Wipeout_AirSkeletonMaxContactArms", 0, 100000},
+    {"Bail: GroundSkeletonMaxContactArms", "Bails", "physics_wipeout", "default", "Wipeout_GroundSkeletonMaxContactArms", 0, 100000},
+    {"Bail: OB_SkeletonMaxContact", "Bails", "physics_wipeout", "default", "Wipeout_OB_SkeletonMaxContact", 0, 100000},
+    {"Bail: OB_SkeletonMaxContactArms", "Bails", "physics_wipeout", "default", "Wipeout_OB_SkeletonMaxContactArms", 0, 100000},
+    {"Bail: OB_Air_SkelMaxContact", "Bails", "physics_wipeout", "default", "Wipeout_OB_Air_SkelMaxContact", 0, 100000},
+    {"Bail: AirSkeletonMaxDisp", "Bails", "physics_wipeout", "default", "Wipeout_AirSkeletonMaxDisp", 0, 100000},
+    {"Bail: GroundSkeletonMaxDisp", "Bails", "physics_wipeout", "default", "Wipeout_GroundSkeletonMaxDisp", 0, 100000},
+    {"Bail: OB_SkeletonMaxDisp", "Bails", "physics_wipeout", "default", "Wipeout_OB_SkeletonMaxDisp", 0, 100000},
+    {"Bail: OB_Air_SkelMaxDisp", "Bails", "physics_wipeout", "default", "Wipeout_OB_Air_SkelMaxDisp", 0, 100000},
+    {"Bail: GroundBalanceBase", "Bails", "physics_wipeout", "default", "Wipeout_GroundBalanceBase", 0, 100000},
+    {"Bail: GroundOpposingContact", "Bails", "physics_wipeout", "default", "Wipeout_GroundOpposingContact", 0, 100000},
+    {"Bail: OB_VehicleContact", "Bails", "physics_wipeout", "default", "Wipeout_OB_VehicleContact", 0, 100000},
+    {"Bail: GroundSkitchingContact", "Bails", "physics_wipeout", "default", "Wipeout_GroundSkitchingContact", 0, 100000},
+    {"Bail: GroundMaxAngularDeckError", "Bails", "physics_wipeout", "default", "Wipeout_GroundMaxAngularDeckError", 0, 100000},
+    {"Bail: GroundLeanContactYThresh", "Bails", "physics_wipeout", "default", "Wipeout_GroundLeanContactYThresh", 0, 100000},
+    {"Bail: #EE81DD78506E4A2D", "Bails", "physics_wipeout", "default", "#EE81DD78506E4A2D", 0, 100000},
+    {"Bail: #F784AC3BA4422FFD", "Bails", "physics_wipeout", "default", "#F784AC3BA4422FFD", 0, 100000},
+    {"Bail: #C7DDE25FF0D72DA0", "Bails", "physics_wipeout", "default", "#C7DDE25FF0D72DA0", 0, 100000},
+    {"Bail: #9F1C2EF30C749332", "Bails", "physics_wipeout", "default", "#9F1C2EF30C749332", 0, 100000},
+    {"Bail: falling max angle", "Bails", "physics_wipeout", "default", "Wipeout_AirFallingMaxAngle", -10, 1},
+    {"Bail on bad landing", "Bails", "physics_mode", nullptr, "WipeoutCheckForBadLanding", 0, 1},
+    {"Push speed limit 2", "Gravity & Speed", "physics_push", "default", "#501D5581043D7D3C", 0, 500},
+    {"Run speed x", "Gravity & Speed", "physics_biped", "default", "SpeedVsInput", 0.1, 20, 'g'},
+    {"Run speed x (alt curve)", "Gravity & Speed", "physics_biped", "default", "#CE8C0D4C6B92FD27", 0.1, 20, 'g'},
+    {"Jump height A", "Pop & Jump", "physics_mode", nullptr, "#0F2473E9125079F0", 0, 50},
+    {"Jump height B", "Pop & Jump", "physics_mode", nullptr, "#1B3E9F9C836D287D", 0, 50},
+    {"Jump height C", "Pop & Jump", "physics_mode", nullptr, "#703829BD711E54DE", 0, 50},
+    {"Jump height D", "Pop & Jump", "physics_mode", nullptr, "#B2B1170AFFC8AC69", 0, 50},
+    {"Jump min height 2", "Pop & Jump", "physics_mode", nullptr, "#BE3F74F978D777E5", 0, 50},
     {"Slow-mo fps at scale 1", "World", "slowmotion_controller", "default", "fps_at_scale_one", 1, 240},
 };
 
@@ -335,7 +369,8 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
       if (c.kind == 'g') {
         // PointNegGraphData8 (80 bytes): xmin ymin xmax ymax, x[8], y[8].
         // PointGraphData8 (64 bytes): x[8], y[8].
-        if (!layout_field || (f.size != 80 && f.size != 64)) continue;
+        // PointNegGraphDataN is 16 + 8N bytes (N = 4, 8, 16).
+        if (!layout_field || (f.size != 80 && f.size != 64 && f.size != 144 && f.size != 48)) continue;
         type = Type::kGraphScale;
       } else if (f.type == Hash64("EA::Reflection::Float")) type = Type::kF32;
       else if (f.type == Hash64("EA::Reflection::Bool")) type = Type::kBool;
@@ -372,9 +407,11 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
         out.min = c.min;
         out.max = c.max;
         if (type == Type::kGraphScale) {
-          const uint32_t y0 = f.size == 80 ? 48 : 32;
-          for (uint32_t k = 0; k < 8; ++k) out.graph_y_offsets.push_back(y0 + k * 4);
-          if (f.size == 80) out.graph_y_offsets.push_back(12);  // ymax
+          const bool header = f.size != 64;
+          const uint32_t n = header ? (f.size - 16) / 8 : 8;
+          const uint32_t y0 = (header ? 16 : 0) + n * 4;
+          for (uint32_t k = 0; k < n; ++k) out.graph_y_offsets.push_back(y0 + k * 4);
+          if (header) out.graph_y_offsets.push_back(12);  // ymax
           for (uint32_t o : out.graph_y_offsets) {
             const uint32_t word = U32(*raw, out.offset + o);
             float v;

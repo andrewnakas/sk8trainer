@@ -41,6 +41,23 @@ void GoTo(int slot);                // teleport through the game's own return pa
 void Clear(int slot);
 // Self-test / audit helpers.
 void DebugOffsetSlot(int slot, float dx, float dy = 0.0f);  // move a saved slot
+// Scripted pad + skater measurement (spin test). Sticks are -1..1.
+void DebugSetPad(bool active, float lx, float ly, float rx, float ry, uint16_t buttons = 0,
+                 uint8_t lt = 0, uint8_t rt = 0);
+struct Measure {
+  bool tracking = false;  // the skater transform was found
+  float yaw_total = 0;    // degrees turned (unwrapped, signed) since reset
+  float marker_yaw_total = 0;  // same, from the game marker re-set every tick
+  int marker_sets = 0;
+  float tumble_total = 0; // degrees the skater's up axis moved (flips), unsigned
+  float air_yaw = 0, air_tumble = 0;  // same, counted only while state != 100
+  float max_rise = 0;     // metres above the height at reset
+  int air_ticks = 0;      // sim ticks with state != 100 since reset
+  int ticks = 0;
+  std::string states;     // state ids seen since reset
+};
+void DebugResetMeasure();
+Measure DebugMeasure();
 void DebugForceGameSet();  // the game places its own marker (like LB + d-pad down)
 SlotInfo Slot(int slot);
 int SelectedSlot();
