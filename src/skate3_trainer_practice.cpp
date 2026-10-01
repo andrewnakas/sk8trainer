@@ -77,6 +77,14 @@ int32_t g_requested_hz = 60;
 int g_timer_hz_live = 0;
 uint64_t g_marker_updates = 0;
 
+// Pause / frame step: the timer thread's "run one sim tick" signal
+// (sub_82966908) is withheld; a step lets that many through.
+bool g_paused = false;
+int g_step_left = 0;
+bool g_bail_now = false;
+int g_pending_position = -1;
+float g_position[3] = {};
+
 // Scripted pad (spin test).
 struct TestPad {
   bool active = false;
@@ -210,7 +218,7 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
   g_status.use_gate = REX_LOAD_U8(marker + kMarkerUseGate) != 0;
 
   if (g_measure_on && !g_auto_return) g_status.player_state = LocalPlayerState(ctx, base, self);
-  if (g_never_bail && g_last_actor && GuestReadable(g_last_actor + 1904, 4)) {
+  if (g_never_bail && !g_bail_now && g_last_actor && GuestReadable(g_last_actor + 1904, 4)) {
     // Drop a wipeout command that is already latched on the local skater.
     const uint32_t cmd = REX_LOAD_U32(g_last_actor + 1904);
     if (cmd & 0x40000000u) REX_STORE_U32(g_last_actor + 1904, cmd & ~0x40000000u);
@@ -224,6 +232,42 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
       REXLOG_INFO("trainer: skater state {} -> {}", last_state, now_state);
       last_state = now_state;
     }
+  }
+  g_status.have_position = false;
+  if (g_bundle && GuestReadable(g_bundle, 8)) {
+    const uint32_t holder = REX_LOAD_U32(g_bundle), body = REX_LOAD_U32(g_bundle + 4);
+    if (GuestReadable(holder + 64, 64)) {
+      g_status.x = LoadF(base, holder + 64 + 48);
+      g_status.y = LoadF(base, holder + 64 + 52);
+      g_status.z = LoadF(base, holder + 64 + 56);
+      g_status.have_position = true;
+      if (g_pending_position >= 0) {
+        // Teleport target: this slot's facing (or the skater's), new position.
+        SlotData& slot = g_slots[g_pending_position];
+        if (!slot.valid) {
+          for (uint32_t i = 0; i < 64; ++i) slot.xform[i] = REX_LOAD_U8(holder + 64 + i);
+          slot.foot = REX_LOAD_U32(marker + kMarkerFoot);
+          slot.onboard = 1;
+          slot.valid = true;
+        }
+        for (int k = 0; k < 3; ++k) {
+          uint32_t bits;
+          std::memcpy(&bits, &g_position[k], 4);
+          for (int b = 0; b < 4; ++b) slot.xform[48 + k * 4 + b] = uint8_t(bits >> (24 - 8 * b));
+        }
+        g_pending_position = -1;
+      }
+    }
+    if (GuestReadable(body + 80, 12)) {
+      const float vx = LoadF(base, body + 80), vy = LoadF(base, body + 84), vz = LoadF(base, body + 88);
+      g_status.speed = std::sqrt(vx * vx + vy * vy + vz * vz);
+    }
+  }
+  if (g_bail_now && g_last_actor && GuestReadable(g_last_actor + 1904, 4)) {
+    // The same latch the game's own "wipe out" command raises (sub_82592390).
+    REX_STORE_U32(g_last_actor + 1904, REX_LOAD_U32(g_last_actor + 1904) | 0x40000000u);
+    g_bail_now = false;
+    g_status.last_event = "bail now";
   }
   if (g_measure_on) {
     ++g_measure.ticks;
@@ -423,6 +467,29 @@ float GameSpeed() {
   std::lock_guard lock(g_mutex);
   return g_speed;
 }
+void SetPaused(bool on) {
+  std::lock_guard lock(g_mutex);
+  g_paused = on;
+  g_step_left = 0;
+}
+bool Paused() {
+  std::lock_guard lock(g_mutex);
+  return g_paused;
+}
+void Step(int ticks) {
+  std::lock_guard lock(g_mutex);
+  g_paused = true;
+  g_step_left += std::max(1, ticks);
+}
+void BailNow() {
+  std::lock_guard lock(g_mutex);
+  g_bail_now = true;
+}
+void SetSlotPosition(int slot, float x, float y, float z) {
+  std::lock_guard lock(g_mutex);
+  g_pending_position = std::clamp(slot, 0, kSlots - 1);
+  g_position[0] = x, g_position[1] = y, g_position[2] = z;
+}
 void SaveHere(int slot) {
   std::lock_guard lock(g_mutex);
   g_pending_save = std::clamp(slot, 0, kSlots - 1);
@@ -546,6 +613,7 @@ Status GetStatus() {
   s.sim_hz = g_timer ? EffectiveHz(g_requested_hz) : 0;
   s.timer_hz_live = g_timer_hz_live;
   s.marker_updates = g_marker_updates;
+  s.paused = g_paused;
   return s;
 }
 
@@ -584,6 +652,17 @@ void Tick(uint8_t* base) {
       if (g_requested_hz <= 0) g_requested_hz = 60;
       g_applied_speed = 1.0f;  // whatever is live now is the game's own rate
       REXLOG_INFO("trainer: sim timer at 0x{:08X}, {} Hz", timer, g_requested_hz);
+      // What the sim thread calls each tick (sub_82966930): obj = [0x830842F4];
+      // vfunc28(obj); vfunc68([obj+16]); vfunc28([obj+16]).
+      const uint32_t obj = REX_LOAD_U32(0x830842F4);
+      if (GuestReadable(obj, 20)) {
+        const uint32_t vt = REX_LOAD_U32(obj), inner = REX_LOAD_U32(obj + 16);
+        const uint32_t ivt = GuestReadable(inner, 4) ? REX_LOAD_U32(inner) : 0;
+        REXLOG_INFO("trainer: sim dispatch obj {:08X} vt {:08X} f28 {:08X} | inner {:08X} vt {:08X} f68 {:08X} f28 {:08X}",
+                    obj, vt, GuestReadable(vt + 28, 4) ? REX_LOAD_U32(vt + 28) : 0, inner, ivt,
+                    GuestReadable(ivt + 68, 4) ? REX_LOAD_U32(ivt + 68) : 0,
+                    GuestReadable(ivt + 28, 4) ? REX_LOAD_U32(ivt + 28) : 0);
+      }
     }
   }
   if (g_timer) g_timer_hz_live = static_cast<int>(REX_LOAD_U32(g_timer + 32));
@@ -610,6 +689,20 @@ extern "C" REX_FUNC(sub_82966910) {
     g_applied_speed = g_speed;
   }
   __imp__sub_82966910(ctx, base);
+}
+
+// Timer thread -> sim: "run one tick" (SetEvent on [timer+4]). The timer
+// thread (sub_82966930) calls this once per period through the timer's vtable.
+extern "C" REX_FUNC(__imp__sub_82966908);
+extern "C" REX_FUNC(sub_82966908) {
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_paused && g_timer && ctx.r3.u32 == g_timer) {
+      if (g_step_left <= 0) return;
+      --g_step_left;
+    }
+  }
+  __imp__sub_82966908(ctx, base);
 }
 
 // PlayerUI::UpdateSessionMarker.

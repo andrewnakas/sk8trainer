@@ -326,9 +326,9 @@ int LocateImageLocked(uint8_t* base) {
       const uint32_t object = LoadBE32(base + e.offset);  // a global in the image
       uint8_t* p = base + object + uint32_t(e.key - 1);
       if (!object || !HostReadable(p, 4)) continue;
-      const double v = LoadBEf(p);
-      auto same = [](double a, double b) { return std::fabs(a - b) <= 1e-4 * std::max(1.0, std::fabs(b)); };
-      if (!same(v, e.stock) && !same(v, e.value)) continue;
+      // The object must look like the one expected: a (0, y, 0) vector.
+      if (!HostReadable(p - 4, 12) || LoadBE32(p - 4) != 0 || LoadBE32(p + 4) != 0) continue;
+      if (const double v = LoadBEf(p); !(v > -1000 && v < 1000)) continue;
       e.direct = p;
     } else if (!e.direct) {
       uint8_t* p = base + e.offset;
@@ -1027,6 +1027,33 @@ void DrawPracticeLocked(int pad_row) {
   }
   ImGui::Separator();
   // Slots.
+  {
+    bool paused = st.paused;
+    if (ImGui::Checkbox("Pause (End)", &paused)) pr::SetPaused(paused);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Step 1 frame (Shift+End)")) pr::Step(1);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Step 10")) pr::Step(10);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Bail now")) pr::BailNow();
+    if (st.have_position) {
+      ImGui::Text("Position %.1f, %.1f, %.1f    Speed %.1f m/s (%.0f km/h)", st.x, st.y, st.z, st.speed,
+                  st.speed * 3.6f);
+    } else {
+      ImGui::TextDisabled("Position: skater not found yet");
+    }
+    static float target[3] = {0, 0, 0};
+    ImGui::SetNextItemWidth(260);
+    ImGui::InputFloat3("##teleport", target, "%.1f");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Here") && st.have_position) target[0] = st.x, target[1] = st.y, target[2] = st.z;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Teleport (uses selected slot)")) {
+      pr::SetSlotPosition(pr::SelectedSlot(), target[0], target[1], target[2]);
+      pr::GoTo(pr::SelectedSlot());
+    }
+  }
+  ImGui::Separator();
   ImGui::Text("Marker slots   Home: go   Shift+Home: save here   PgUp/PgDn: select");
   const int selected = pr::SelectedSlot();
   for (int i = 0; i < pr::kSlots; ++i) {
@@ -1492,7 +1519,76 @@ void Audit() {
              st.last_event.find("going to slot 1") != std::string::npos &&
                  st.last_event.find("timed out") == std::string::npos,
              st.last_event);
-      pr::SaveHere(0);  // re-save where we landed: the auto-return target
+      next(20);
+      break;
+
+    case 20: {  // position readout + teleport to coordinates (5 m along x)
+      if (waited < 1) break;
+      static float want_x = 0;
+      static bool sent = false;
+      if (!sent) {
+        record("position + speed readout", st.have_position,
+               std::to_string(st.x) + ", " + std::to_string(st.y) + ", " + std::to_string(st.z) + "  " +
+                   std::to_string(st.speed) + " m/s");
+        want_x = st.x + 5.0f;
+        pr::SetSlotPosition(0, want_x, st.y, st.z);
+        pr::GoTo(0);
+        sent = true;
+        at = now;
+        break;
+      }
+      if (waited < 5) break;
+      record("teleport to coordinates", st.have_position && std::fabs(st.x - want_x) < 1.5f,
+             "wanted x " + std::to_string(want_x) + ", at " + std::to_string(st.x));
+      pr::SetPaused(true);
+      next(21);
+      break;
+    }
+
+    case 21: {  // pause: the sim stops (a tick already under way may finish)
+      static uint64_t from = 0;
+      if (waited < 1) {
+        from = st.marker_updates;
+        break;
+      }
+      if (waited < 3) break;
+      const uint64_t ran = st.marker_updates - from;
+      record("pause stops the sim", ran <= 1, std::to_string(ran) + " sim ticks in 2 s");
+      pr::Step(10);
+      next(22);
+      break;
+    }
+
+    case 22: {  // frame step
+      if (waited < 2) break;
+      const uint64_t ran = st.marker_updates - updates_at;
+      record("step 10 frames runs 10 sim ticks", ran >= 10 && ran <= 12, std::to_string(ran) + " ticks");
+      pr::SetPaused(false);
+      next(23);
+      break;
+    }
+
+    case 23: {  // resume
+      if (waited < 2) break;
+      const double rate = (st.marker_updates - updates_at) / waited;
+      record("resume after pause", rate > 40, std::to_string(rate) + " updates/s");
+      pr::SetNeverBail(false);
+      states_seen.clear();
+      bail_seen = false;
+      pr::BailNow();
+      next(24);
+      break;
+    }
+
+    case 24:  // bail now
+      if (!bail_seen && waited < 6) break;
+      record("bail now", bail_seen, bail_seen ? "state 300 seen" : "no bail in 6 s");
+      next(25);
+      break;
+
+    case 25:  // let the skater get up, then save the auto-return target
+      if (waited < 6) break;
+      pr::SaveHere(0);
       next(11);
       break;
 
@@ -1828,12 +1924,17 @@ void RegisterBinds() {
                         [] { pr::SelectSlot(pr::SelectedSlot() - 1); });
   rex::ui::RegisterBind("bind_skate3_trainer_next", "PageDown", "SK8TRAINER: next slot",
                         [] { pr::SelectSlot(pr::SelectedSlot() + 1); });
+  rex::ui::RegisterBind("bind_skate3_trainer_pause", "End", "SK8TRAINER: pause / resume",
+                        [] { pr::SetPaused(!pr::Paused()); });
+  rex::ui::RegisterBind("bind_skate3_trainer_step", "Shift+End", "SK8TRAINER: step one frame",
+                        [] { pr::Step(1); });
   rex::ui::RegisterBind("bind_skate3_trainer_slowmo", "Delete", "SK8TRAINER: toggle half speed",
                         [] { pr::SetGameSpeed(pr::GameSpeed() < 0.99f ? 1.0f : 0.5f); });
 }
 
 void UnregisterBinds() {
-  for (const char* b : {"bind_skate3_trainer_goto", "bind_skate3_trainer_save",
+  for (const char* b : {"bind_skate3_trainer_pause", "bind_skate3_trainer_step",
+                        "bind_skate3_trainer_goto", "bind_skate3_trainer_save",
                         "bind_skate3_trainer_prev", "bind_skate3_trainer_next",
                         "bind_skate3_trainer_slowmo"}) {
     rex::ui::UnregisterBind(b);

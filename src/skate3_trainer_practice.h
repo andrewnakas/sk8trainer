@@ -29,6 +29,10 @@ struct Status {
   int bails_blocked = 0;        // bail transitions refused by Never bail
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
+  bool have_position = false;   // the local skater's transform was read this tick
+  float x = 0, y = 0, z = 0;    // world position (metres)
+  float speed = 0;              // metres per second
+  bool paused = false;
   std::string last_event;
 };
 
@@ -36,6 +40,16 @@ struct Status {
 // the game's fixed 1/60 s step, so physics stay stable.
 void SetGameSpeed(float speed);
 float GameSpeed();
+
+// Pause stops the sim clock (the picture keeps drawing); Step lets it run for
+// that many sim ticks (1/60 s each) and pauses again.
+void SetPaused(bool on);
+bool Paused();
+void Step(int ticks);
+void BailNow();                     // wipe out on the next sim tick
+// Put a position into a slot, keeping its saved facing (or the skater's
+// current one when the slot is empty), so GoTo teleports there.
+void SetSlotPosition(int slot, float x, float y, float z);
 
 void SaveHere(int slot);            // set the game marker here and copy it to slot
 void CaptureGameMarker(int slot);   // copy the game's current marker to slot
