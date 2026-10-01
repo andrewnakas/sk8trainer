@@ -73,6 +73,8 @@ struct Entry {
   double value = 0;     // last value read from / written to guest memory
   bool frozen = false;  // rewritten every frame
   bool touched = false; // edited by the user this session (saved)
+  bool overridden = false;    // a live feature (perfect finish) holds another value right now
+  double override_value = 0;
 };
 
 enum class Locate { kIdle, kScanning, kFound, kNotFound };
@@ -833,7 +835,7 @@ void DrawPracticeLocked(int pad_row) {
   mark(pr::kSlots + 1);
   bool auto_return = pr::AutoReturn();
   float delay = pr::AutoReturnDelay();
-  ImGui::Checkbox("Perfect finish: multi-flip while grabbing, auto-land on release", &g_perfect_finish);
+  ImGui::Checkbox("Perfect finish: flip only while grabbing; release any time = stop + square up", &g_perfect_finish);
   if (ImGui::Checkbox("Auto-return to selected slot after a bail", &auto_return)) {
     pr::SetAutoReturn(auto_return, delay);
   }
@@ -1527,7 +1529,9 @@ void Tick(uint8_t* base) {
     for (Entry& e : g_entries) {
       // Anything the player set stays set: the game re-creates some rows
       // (session-marker return) and would silently go back to stock.
-      if (e.frozen || e.touched) {
+      if (e.overridden) {
+        WriteEntry(e, blob, e.override_value);
+      } else if (e.frozen || e.touched) {
         if (frame % 6 == 0 && e.type != Type::kGraphScale) {
           const double live = ReadEntry(e, blob);
           if (std::fabs(live - e.value) > 1e-4 * std::max(1.0, std::fabs(e.value))) {
@@ -1560,17 +1564,36 @@ void Tick(uint8_t* base) {
     }
     if (frame % 120 == 60) watch::Report();
   }
-  if (g_perfect_finish && g_blob.load()) {
+  if (g_blob.load()) {
+    // Perfect finish. Grab held: the one-flip lock is off and flips run at the
+    // player's speed. Both triggers up: flip rotation stops at once and the
+    // lock comes back, so the game squares the skater up for the landing no
+    // matter when the grab was released.
+    static bool was_on = false, was_grab = false;
     const practice::Status ps = practice::GetStatus();
-    const double want = (ps.pad_lt > 40 || ps.pad_rt > 40) ? 0.0 : 1.0;
-    std::lock_guard lock(g_mutex);
-    for (Entry& e : g_entries) {
-      if (e.source.find("PerfectBodyFlips") == std::string::npos) continue;
-      e.value = want;
-      e.frozen = true;
-      e.touched = true;
-      WriteEntry(e, g_blob.load(), want);
+    const bool grab = ps.pad_lt > 40 || ps.pad_rt > 40;
+    if (g_perfect_finish || was_on) {
+      std::lock_guard lock(g_mutex);
+      for (Entry& e : g_entries) {
+        const bool lock_flag = e.source.find("PerfectBodyFlips") != std::string::npos;
+        const bool speed = e.source.find("/FlipMaxSpeed") != std::string::npos ||
+                           e.source.find("/FlipScalar") != std::string::npos;
+        if (!lock_flag && !speed) continue;
+        if (!g_perfect_finish) {
+          e.overridden = false;
+        } else if (lock_flag) {
+          e.overridden = true;
+          e.override_value = grab ? 0.0 : 1.0;
+        } else {
+          e.overridden = !grab;
+          e.override_value = 0.0;
+        }
+        WriteEntry(e, g_blob.load(), e.overridden ? e.override_value : e.value);
+      }
+      if (g_perfect_finish && grab != was_grab) REXLOG_INFO("trainer: perfect finish - grab {}", grab ? "held" : "released");
     }
+    was_on = g_perfect_finish;
+    was_grab = grab;
   }
   if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
   if (REXCVAR_GET(skate3_trainer_audit)) Audit();
