@@ -167,6 +167,25 @@ bool g_never_bail = false;
 int g_detect_streak = 0;
 uint32_t g_local_state = 0;  // the local player's state object (AI skaters have their own)
 int g_block_streak = 0;  // consecutive ticks a bail was refused
+// Never bail, last line of defence: when the game keeps demanding a bail (a
+// landing it cannot recover from, e.g. a foot off the board), stand the skater
+// back up through the game's own marker return, which carries an explicit
+// target. That return needs the target more than 0.5 m away and the button
+// held 0.2 s (sub_82898FC8), so the spot is 0.7 m ahead.
+constexpr int kRescueAfterTicks = 6;
+bool g_rescue_on = false;  // opt-in: it is a respawn, not a landing
+bool g_rescue_wanted = false;
+// Holding a push button (A / X) in the air takes that foot off the board for
+// a footplant. Landing like that starts the game's bail-out animation (the
+// skater "runs" on the board), which only a bail can end. With Never bail on,
+// those two buttons are not passed to the game while the skater is airborne.
+bool g_keep_feet_on = true;
+int g_feet_streak = 0;
+int g_rescue_cooldown = 0;
+bool g_marker_borrowed = false;  // the game marker holds the rescue spot
+SlotData g_marker_saved;         // what it held before
+bool g_marker_saved_has = false;
+float g_live_velocity[3] = {};
 // vfunc20(actor+44): [+0] -> object with the skater's 4x4 world matrix at +64
 // (sub_82592A00), [+4] -> object with the velocity at +80, [+28] -> state.
 uint32_t g_bundle = 0;
@@ -229,7 +248,8 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
     const int32_t now_state = (g_measure_on || g_auto_return) ? g_status.player_state : LocalPlayerState(ctx, base, self);
     g_status.player_state = now_state;
     if (now_state != last_state) {
-      REXLOG_INFO("trainer: skater state {} -> {}", last_state, now_state);
+      REXLOG_INFO("trainer: skater state {} -> {} at {:.1f}, {:.1f}, {:.1f} ({:.1f} m/s)", last_state, now_state,
+                  g_status.x, g_status.y, g_status.z, g_status.speed);
       last_state = now_state;
     }
   }
@@ -261,6 +281,7 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
     if (GuestReadable(body + 80, 12)) {
       const float vx = LoadF(base, body + 80), vy = LoadF(base, body + 84), vz = LoadF(base, body + 88);
       g_status.speed = std::sqrt(vx * vx + vy * vy + vz * vz);
+      g_live_velocity[0] = vx, g_live_velocity[1] = vy, g_live_velocity[2] = vz;
     }
   }
   if (g_bail_now && g_last_actor && GuestReadable(g_last_actor + 1904, 4)) {
@@ -344,6 +365,60 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
     }
   }
 
+  if (g_rescue_cooldown > 0) --g_rescue_cooldown;
+  if (g_rescue_wanted) {
+    g_rescue_wanted = false;
+    const uint32_t holder = g_bundle && GuestReadable(g_bundle, 4) ? REX_LOAD_U32(g_bundle) : 0;
+    if (g_status.use_gate && g_force_return_frames == 0 && holder && GuestReadable(holder + 64, 64)) {
+      // Upright copy of the skater transform: keep the heading, level the rest.
+      float m[16];
+      for (int i = 0; i < 16; ++i) m[i] = LoadF(base, holder + 64 + i * 4);
+      // Rows 0 and 2 are the horizontal axes, row 1 is up, row 3 the position.
+      // Level whichever horizontal axis is flatter and rebuild the other.
+      const bool right_handed = (m[1] * m[6] - m[2] * m[5]) * m[8] + (m[2] * m[4] - m[0] * m[6]) * m[9] +
+                                    (m[0] * m[5] - m[1] * m[4]) * m[10] > 0;
+      const int keep = std::fabs(m[1]) <= std::fabs(m[9]) ? 0 : 2;
+      float ax = m[keep * 4], az = m[keep * 4 + 2];
+      float len = std::sqrt(ax * ax + az * az);
+      if (len < 1e-3f) ax = 1, az = 0, len = 1;
+      ax /= len, az /= len;
+      float bx = az, bz = -ax;  // up x kept
+      if ((keep == 0) != right_handed) bx = -bx, bz = -bz;
+      float out[16] = {};
+      out[keep * 4] = ax, out[keep * 4 + 2] = az;
+      out[5] = 1;
+      out[(2 - keep) * 4] = bx, out[(2 - keep) * 4 + 2] = bz;
+      // 0.7 m along the direction of travel (or the kept axis when standing).
+      float dx = g_live_velocity[0], dz = g_live_velocity[2];
+      float speed = std::sqrt(dx * dx + dz * dz);
+      if (speed < 0.5f) dx = ax, dz = az, speed = 1;
+      out[12] = m[12] + dx / speed * 0.7f, out[13] = m[13] + 0.05f, out[14] = m[14] + dz / speed * 0.7f;
+      out[3] = m[3], out[7] = m[7], out[11] = m[11], out[15] = m[15];
+      g_marker_saved_has = REX_LOAD_U8(marker + kMarkerHas) != 0;
+      if (g_marker_saved_has) CopyOut(base, marker, g_marker_saved);
+      SlotData spot;
+      for (int i = 0; i < 16; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &out[i], 4);
+        for (int b = 0; b < 4; ++b) spot.xform[i * 4 + b] = uint8_t(bits >> (24 - 8 * b));
+      }
+      spot.foot = REX_LOAD_U32(marker + kMarkerFoot);
+      spot.onboard = 1;
+      spot.valid = true;
+      CopyIn(base, marker, spot);
+      g_last_seen = spot.xform;
+      g_marker_borrowed = true;
+      g_force_return_frames = 90;
+      g_rescue_cooldown = 150;
+      ++g_status.rescues;
+      g_status.last_event = "never bail: stood you back up";
+      REXLOG_INFO("trainer: never bail - the game keeps demanding a bail, standing the skater back up in place");
+    } else {
+      REXLOG_INFO("trainer: never bail - could not stand the skater up (marker use {}, busy {})",
+                  g_status.use_gate, g_force_return_frames);
+    }
+  }
+
   if (g_pending_goto >= 0) {
     const SlotData& s = g_slots[g_pending_goto];
     if (s.valid && g_status.use_gate) {
@@ -370,6 +445,16 @@ void AfterMarkerUpdate(uint8_t* base, uint32_t self, uint32_t marker) {
     if (REX_LOAD_U8(self + 204) != 0 || --g_force_return_frames == 0) {
       if (g_force_return_frames == 0) g_status.last_event += " (timed out)";
       g_force_return_frames = 0;
+      if (g_marker_borrowed) {
+        // Give the player's own marker back.
+        g_marker_borrowed = false;
+        if (g_marker_saved_has) {
+          CopyIn(base, marker, g_marker_saved);
+          g_last_seen = g_marker_saved.xform;
+        } else {
+          REX_STORE_U8(marker + kMarkerHas, 0);
+        }
+      }
     }
   }
   if (g_force_set && g_measure_on && has && g_pending_save < 0) {
@@ -530,6 +615,22 @@ void DebugSetPad(bool active, float lx, float ly, float rx, float ry, uint16_t b
 void SetNeverBail(bool on) {
   std::lock_guard lock(g_mutex);
   g_never_bail = on;
+}
+void SetStandUp(bool on) {
+  std::lock_guard lock(g_mutex);
+  g_rescue_on = on;
+}
+bool StandUp() {
+  std::lock_guard lock(g_mutex);
+  return g_rescue_on;
+}
+void SetKeepFeetOn(bool on) {
+  std::lock_guard lock(g_mutex);
+  g_keep_feet_on = on;
+}
+bool KeepFeetOn() {
+  std::lock_guard lock(g_mutex);
+  return g_keep_feet_on;
 }
 bool NeverBail() {
   std::lock_guard lock(g_mutex);
@@ -738,6 +839,8 @@ extern "C" REX_FUNC(sub_82D8ADE8) {
       std::lock_guard lock(g_mutex);
       // A bail asked for on every tick for 2 s is let through (never stuck).
       if (requested && g_block_streak < 120) REX_STORE_U32(body + 2468, flags & ~0x00040000u);
+      // While the stand-up return is under way the demand does not count.
+      if (g_marker_borrowed && g_block_streak > kRescueAfterTicks) g_block_streak = kRescueAfterTicks + 1;
     }
   }
   __imp__sub_82D8ADE8(ctx, base);
@@ -745,6 +848,9 @@ extern "C" REX_FUNC(sub_82D8ADE8) {
   if (!on) return;
   const bool wants_bail = ctx.r3.u32 == 300;
   if (wants_bail && g_block_streak < 120) ctx.r3.u64 = current;
+  if ((requested || wants_bail) && g_block_streak == kRescueAfterTicks && g_rescue_cooldown == 0 && g_rescue_on) {
+    g_rescue_wanted = true;
+  }
   if (requested || wants_bail) {
     if (g_block_streak++ == 0) {
       ++g_status.bails_blocked;
@@ -809,16 +915,28 @@ extern "C" REX_FUNC(sub_82EE22C0) {
     g_status.pad_lt = REX_LOAD_U8(state + 6);
     g_status.pad_rt = REX_LOAD_U8(state + 7);
   }
-  if (!g_pad.active || user != 0 || !state) return;
-  REX_STORE_U32(state, ++g_pad_packet);
-  REX_STORE_U16(state + 4, g_pad.buttons);
-  REX_STORE_U8(state + 6, g_pad.lt);
-  REX_STORE_U8(state + 7, g_pad.rt);
-  REX_STORE_U16(state + 8, static_cast<uint16_t>(g_pad.lx));
-  REX_STORE_U16(state + 10, static_cast<uint16_t>(g_pad.ly));
-  REX_STORE_U16(state + 12, static_cast<uint16_t>(g_pad.rx));
-  REX_STORE_U16(state + 14, static_cast<uint16_t>(g_pad.ry));
-  ctx.r3.u64 = 0;
+  if (g_pad.active && user == 0 && state) {
+    REX_STORE_U32(state, ++g_pad_packet);
+    REX_STORE_U16(state + 4, g_pad.buttons);
+    REX_STORE_U8(state + 6, g_pad.lt);
+    REX_STORE_U8(state + 7, g_pad.rt);
+    REX_STORE_U16(state + 8, static_cast<uint16_t>(g_pad.lx));
+    REX_STORE_U16(state + 10, static_cast<uint16_t>(g_pad.ly));
+    REX_STORE_U16(state + 12, static_cast<uint16_t>(g_pad.rx));
+    REX_STORE_U16(state + 14, static_cast<uint16_t>(g_pad.ry));
+    ctx.r3.u64 = 0;
+  }
+  if (g_never_bail && g_keep_feet_on && user == 0 && state && ctx.r3.u32 == 0 &&
+      g_status.player_state >= 200 && g_status.player_state < 300) {
+    // A = 0x1000, X = 0x4000 (XINPUT_GAMEPAD_A / _X).
+    const uint16_t buttons = REX_LOAD_U16(state + 4);
+    if (buttons & 0x5000) {
+      REX_STORE_U16(state + 4, buttons & ~0x5000);
+      if (g_feet_streak++ == 0) ++g_status.feet_kept;
+    } else {
+      g_feet_streak = 0;
+    }
+  }
 }
 
 // Input action query (bool). Forced only inside the marker update.

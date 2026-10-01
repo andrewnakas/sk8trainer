@@ -27,6 +27,8 @@ struct Status {
   uint64_t marker_updates = 0;  // session-marker update calls (one per sim tick)
   uint8_t pad_lt = 0, pad_rt = 0;  // the triggers the game last read
   int bails_blocked = 0;        // bail transitions refused by Never bail
+  int feet_kept = 0;            // airs in which a push button was ignored (feet stay on)
+  int rescues = 0;              // times Never bail stood the skater back up in place
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
   bool have_position = false;   // the local skater's transform was read this tick
@@ -76,6 +78,16 @@ struct Measure {
 // state (300).
 void SetNeverBail(bool on);
 bool NeverBail();
+// With Never bail: when the game keeps demanding a bail anyway, respawn the
+// skater standing on the board where they are instead of bailing. Off by
+// default (the bail is then let through after 2 s).
+void SetStandUp(bool on);
+bool StandUp();
+// With Never bail: ignore the push buttons (A / X) while airborne, so a foot
+// never comes off the board in the air (landing like that always bails). On
+// by default; turn off to do footplants.
+void SetKeepFeetOn(bool on);
+bool KeepFeetOn();
 void DebugFreezeOrientation(int ticks);  // experiment: hold the skater's rotation for N sim ticks
 void DebugResetMeasure();
 Measure DebugMeasure();

@@ -838,13 +838,17 @@ std::filesystem::path OptionsPath() { return TrainerFolder() / "options.txt"; }
 void SaveOptions() {
   std::error_code ec;
   std::filesystem::create_directories(TrainerFolder(), ec);
-  std::ofstream(OptionsPath()) << "never_bail=" << (practice::NeverBail() ? 1 : 0) << std::endl;
+  std::ofstream(OptionsPath()) << "never_bail=" << (practice::NeverBail() ? 1 : 0) << std::endl
+                               << "stand_up=" << (practice::StandUp() ? 1 : 0) << std::endl
+                               << "keep_feet_on=" << (practice::KeepFeetOn() ? 1 : 0) << std::endl;
 }
 void LoadOptions() {
   std::ifstream in(OptionsPath());
   std::string line;
   while (std::getline(in, line)) {
     if (line.rfind("never_bail=", 0) == 0) practice::SetNeverBail(line.size() > 11 && line[11] == '1');
+    if (line.rfind("stand_up=", 0) == 0) practice::SetStandUp(line.size() > 9 && line[9] == '1');
+    if (line.rfind("keep_feet_on=", 0) == 0) practice::SetKeepFeetOn(line.size() > 13 && line[13] == '1');
   }
 }
 
@@ -1093,6 +1097,16 @@ void DrawPracticeLocked(int pad_row) {
     if (ImGui::Checkbox("NEVER BAIL", &never)) SetNeverBailLocked(never);
     ImGui::SameLine();
     ImGui::TextDisabled("%d refused", pr::GetStatus().bails_blocked);
+    bool feet = pr::KeepFeetOn();
+    if (ImGui::Checkbox("   keep both feet on in the air (ignores A / X while airborne; off = footplants work)", &feet)) {
+      pr::SetKeepFeetOn(feet);
+      SaveOptions();
+    }
+    bool stand = pr::StandUp();
+    if (ImGui::Checkbox("   respawn me standing right there if the game still insists on a bail", &stand)) {
+      pr::SetStandUp(stand);
+      SaveOptions();
+    }
   }
   ImGui::Checkbox("Perfect finish (experimental): flip only while grabbing; release = stop + square up", &g_perfect_finish);
   if (ImGui::Checkbox("Auto-return to selected slot after a bail", &auto_return)) {
@@ -1719,11 +1733,11 @@ void SpinTest() {
 #define UFLIP {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}, {"FlipBodySpinScalar", false, 1.1}
 #define BAILY {"Wipeout_GroundBalanceTotal", false, 0}, {"Wipeout_GroundBalanceBase", false, 0}, {"Wipeout_GroundSkeletonMaxContact", false, 0}, {"Wipeout_AirSkeletonMaxContact", false, 0}, {"Wipeout_AirMaxSpeedIntoGround", false, 0}, {"Wipeout_AirMaxSpeedIntoStairs", false, 0}
   static const std::vector<Trial> trials = {
-      {"stock ollie", 0, 0, 0, 0, 0, {}},
-      {"engine gravity -4.9", 0, 0, 0, 0, 0, {{"image/822F8B40", false, -4.9}}},
-      {"vault WorldGravity -4.9", 0, 0, 0, 0, 0, {{"physics/default/WorldGravity+4", false, -4.9}}},
-      {"both gravities -4.9", 0, 0, 0, 0, 0, {{"image/822F8B40", false, -4.9}, {"physics/default/WorldGravity+4", false, -4.9}}},
-      {"speed-cons Gravity x0.5", 0, 0, 0, 0, 0, {{"physics_speed_conservation/default/Gravity", true, 0.5}}},
+      {"X held in air then let go", 0, -1, 0, 0, 0x4000, {POP}},
+      {"plain ollie after", 0, 0, 0, 0, 0, {POP}},
+      {"push, A held + LS right", 1, 0, 0, 0, 0x1000, {POP}},
+      {"push, X held whole time", 0, -1, 0, 0, 0x4000, {POP}},
+      {"plain ollie after (2)", 0, 0, 0, 0, 0, {POP}},
   };
   static int step = 0;
   static size_t trial = 0;
@@ -1772,11 +1786,17 @@ void SpinTest() {
         }
       }
       if (trial > 0) pr::GoTo(0);
-      pr::SetNeverBail(trial != 2);
+      pr::SetNeverBail(true);
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
-      if (t < 420) break;
+      if (t < 420) {
+        // "push" trials: tap A to roll away from the start spot first.
+        if (std::strstr(trials[trial].name, "push") && t > 120) {
+          pr::DebugSetPad(true, 0, 0, 0, 0, (t / 20) % 2 ? 0x1000 : 0);
+        }
+        break;
+      }
       if (trials[trial].pre) pr::DebugSetPad(true, trials[trial].lx, trials[trial].ly, 0, -1, trials[trial].buttons, trials[trial].lt, trials[trial].rt);
       else pr::DebugSetPad(true, 0, 0, 0, -1);
       next(3);
@@ -1794,7 +1814,8 @@ void SpinTest() {
       next(5);
       break;
     case 5: {  // through the air and the landing
-      if (t < 300) break;
+      if (std::strstr(trials[trial].name, "release") && t == 170) pr::DebugSetPad(true, 0, 0, 0, 0);
+      if (std::strstr(trials[trial].name, "long") ? t < 600 : t < 300) break;
       const pr::Measure m = pr::DebugMeasure();
       REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  air {:3}/{} ticks  tracking {}  bails blocked {}  states{}",
                   trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.air_ticks, m.ticks, m.tracking, st.bails_blocked, m.states);
