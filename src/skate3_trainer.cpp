@@ -3,6 +3,11 @@
 #include "skate3_trainer_vault.h"
 #include "skate3_trainer_watch.h"
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -24,6 +29,7 @@
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 #include <rex/ui/keybinds.h>
@@ -47,6 +53,13 @@ REXCVAR_DEFINE_BOOL(skate3_trainer_audit, false, "Skate 3",
 REXCVAR_DEFINE_BOOL(skate3_trainer_spintest, false, "Skate 3",
                     "SK8TRAINER diagnostic: scripted ollie + spin per value group; logs 'trainer "
                     "spintest:' lines with degrees turned.");
+REXCVAR_DEFINE_BOOL(skate3_trainer_probe, false, "Skate 3",
+                    "SK8TRAINER developer diagnostic: find the live world gravity by writing "
+                    "candidates and measuring a scripted ollie; logs 'trainer probe:' lines.");
+REXCVAR_DEFINE_BOOL(skate3_trainer_dump, false, "Skate 3",
+                    "SK8TRAINER developer diagnostic: once the vault is live, write the game's "
+                    "loaded image (guest 0x82000000 up) to <user data>/trainer/image.bin and log "
+                    "'trainer dump: done'.");
 REXCVAR_DEFINE_BOOL(skate3_trainer_watch, false, "Skate 3",
                     "SK8TRAINER diagnostic (Windows): log which game functions read the Spin and "
                     "Flips values while you play ('trainer watch:' lines every 2 s). Slows the game.");
@@ -143,7 +156,8 @@ bool HostReadable(const uint8_t* p, size_t n);
 uint8_t* BaseFor(const Entry& e, uint8_t* bin) {
   // Inline fields are located one by one (see LocateInline); the game does
   // not keep the .vlt as one contiguous copy.
-  return e.blob == vault::kVlt ? (e.direct ? e.direct - e.offset : nullptr) : bin;
+  // Image constants are checked and made writable one by one (LocateImage).
+  return e.blob == vault::kBin ? bin : (e.direct ? e.direct - e.offset : nullptr);
 }
 
 double ReadEntry(const Entry& e, uint8_t* bin) {
@@ -197,6 +211,7 @@ void WriteEntry(const Entry& e, uint8_t* bin, double v) {
 // Builds the table from the player's own db.big (title update first, then
 // the disc copy), so nothing game-derived ships with the trainer.
 // Runs on its own thread (reads and decompresses ~2.5 MB once).
+void AddImageEntries();
 void LoadTable() {
   vault::Table table;
   std::filesystem::path used;
@@ -251,8 +266,82 @@ void LoadTable() {
     }
     g_entries.push_back(std::move(e));
   }
+  AddImageEntries();
   REXLOG_INFO("trainer: {} entries, {} anchors built from {}", g_entries.size(), g_anchors.size(),
               (used / "data" / "big" / "db.big").string());
+}
+
+// Constants in the game's executable (Xbox 360 title update 3 addresses, as
+// published for console trainers). Each is used only if the live value is the
+// expected one, so a different build simply shows the slider as unavailable.
+struct ImageConstant {
+  const char* label;
+  uint32_t address;
+  float stock, min, max;
+  // >= 0: `address` holds a pointer to a live object; the value is this far into it.
+  int deref = -1;
+};
+constexpr ImageConstant kImageConstants[] = {
+    // Found with skate3_trainer_probe: the physics world's gravity vector (y).
+    {"Gravity (world: air time, falls, objects)", 0x83085428, -9.8f, -50, 0, 0x24},
+    {"Jump power constant (-99.8 = super jump)", 0x822F8B40, -9.8f, -100, 0},
+    {"Hippy / on-foot jump strength", 0x822F8BD0, 19.6f, 0, 400},
+    {"Boneless / footplant speed boost", 0x82099998, 1.92f, 0, 20},
+    {"Slow motion factor", 0x820C6D9C, 0.235f, 0, 200},
+    {"Stick scale forward/back (lower = faster)", 0x82174ED8, 1456.35f, 200, 3000},
+    {"Stick scale left/right (lower = faster)", 0x82174EDC, 1023.5f, 200, 3000},
+    {"Shadow distance", 0x822F9600, 512.0f, 0, 4096},
+    {"Visibility (255 solid, 0 invisible; experimental)", 0x820BD264, 255.0f, 0, 255},
+};
+
+void AddImageEntries() {
+  for (const ImageConstant& c : kImageConstants) {
+    Entry e;
+    e.label = c.label;
+    e.group = "Engine";
+    char source[32];
+    if (c.deref >= 0) std::snprintf(source, sizeof(source), "live/%08X+%X", c.address, c.deref);
+    else std::snprintf(source, sizeof(source), "image/%08X", c.address);
+    e.key = c.deref >= 0 ? uint64_t(c.deref) + 1 : 0;  // image entries: deref offset + 1
+    e.source = source;
+    e.blob = vault::kImage;
+    e.offset = c.address;
+    e.stock = e.value = c.stock;
+    e.min = c.min;
+    e.max = c.max;
+    if (std::find(g_groups.begin(), g_groups.end(), e.group) == g_groups.end()) g_groups.push_back(e.group);
+    g_entries.push_back(std::move(e));
+  }
+}
+
+// Checks each image constant against its expected value and makes its page
+// writable. Returns how many are usable. Call with g_mutex held.
+int LocateImageLocked(uint8_t* base) {
+  int found = 0;
+  for (Entry& e : g_entries) {
+    if (e.blob != vault::kImage) continue;
+    if (e.key) {
+      // Through a global pointer: follow it again every time (objects move).
+      e.direct = nullptr;
+      const uint32_t object = LoadBE32(base + e.offset);  // a global in the image
+      uint8_t* p = base + object + uint32_t(e.key - 1);
+      if (!object || !HostReadable(p, 4)) continue;
+      const double v = LoadBEf(p);
+      auto same = [](double a, double b) { return std::fabs(a - b) <= 1e-4 * std::max(1.0, std::fabs(b)); };
+      if (!same(v, e.stock) && !same(v, e.value)) continue;
+      e.direct = p;
+    } else if (!e.direct) {
+      uint8_t* p = base + e.offset;
+      size_t length = 4;
+      rex::memory::PageAccess access{};
+      if (!rex::memory::QueryProtect(p, length, access) || access == rex::memory::PageAccess::kNoAccess) continue;
+      if (std::fabs(LoadBEf(p) - e.stock) > 1e-4 * std::max(1.0, std::fabs(e.stock))) continue;
+      if (!rex::memory::Protect(p, 4, rex::memory::PageAccess::kReadWrite)) continue;
+      e.direct = p;
+    }
+    ++found;
+  }
+  return found;
 }
 
 // Saved user values: source -> {value, frozen}.
@@ -514,6 +603,8 @@ void ScanThread(uint8_t* base) {
   g_scan_hits = hits;
   if (best) {
     std::lock_guard lock(g_mutex);
+    const int image_found = LocateImageLocked(base);
+    REXLOG_INFO("trainer: {} engine constants usable", image_found);
     int matches = 0;
     for (Entry& e : g_entries) {
       e.value = ReadEntry(e, best);
@@ -632,8 +723,8 @@ const std::vector<Preset>& Presets() {
        join({never_bail, any_angle, smooth_flip, {{"EasyBodySpins", false, 1}, {"MaxSpinSpeed", true, 2}}})},
       {"Big Air", "Everything: Mega Pop + Spin + Multi Flip + Fast + Land Any Angle + Never Bail",
        join({pop3, spin, multi_flip, fast, any_angle, never_bail})},
-      {"Moon", "Pop x2.5, floaty ragdolls, higher hippy jumps",
-       {{"/JumpMinHeight", true, 2.5}, {"/JumpMaxHeight", true, 2.5},
+      {"Moon", "Low gravity (x0.4), floaty ragdolls, higher hippy jumps",
+       {{"live/83085428", true, 0.4},
         {"physics_biped/default/JumpHeight", true, 2.5},
         {"Wipeout_AirYAcceleration", true, 0.3}, {"Wipeout_GroundYAcceleration", true, 0.3}}},
       {"THPS", "Arcade: easy fast spins, auto push, push speed x2",
@@ -1097,6 +1188,35 @@ void SelfTest() {
 }
 
 
+// Developer diagnostic (skate3_trainer_dump): the loaded image, with holes
+// (unreadable pages) left as zeros so file offset = guest address - base.
+// The image is mapped by the loader, not the heap table, so this asks the OS.
+void DumpImage() {
+  static bool done = false;
+  if (done || !g_blob.load() || !practice::GetStatus().marker_seen) return;
+  done = true;
+  uint64_t bytes = 0;
+#ifdef _WIN32
+  constexpr uint32_t kBase = 0x82000000, kEnd = 0x84000000;
+  uint8_t* base = g_base.load();
+  std::vector<uint8_t> image(kEnd - kBase);
+  for (uint64_t a = kBase; base && a < kEnd;) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(base + a, &mbi, sizeof(mbi))) break;
+    const uint64_t next = std::min<uint64_t>(static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize - base, kEnd);
+    constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY;
+    if (mbi.State == MEM_COMMIT && (mbi.Protect & kReadable) && !(mbi.Protect & PAGE_GUARD)) {
+      std::memcpy(&image[a - kBase], base + a, next - a);
+      bytes += next - a;
+    }
+    a = next > a ? next : a + 0x1000;
+  }
+  std::ofstream(TrainerFolder() / "image.bin", std::ios::binary)
+      .write(reinterpret_cast<const char*>(image.data()), image.size());
+#endif
+  REXLOG_INFO("trainer dump: done {} bytes readable", bytes);
+}
+
 // Full audit (skate3_trainer_audit). Runs from Tick on the guest thread, one
 // step at a time, and leaves the game and user.toml as it found them.
 void Audit() {
@@ -1503,10 +1623,11 @@ void SpinTest() {
 #define UFLIP {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}, {"FlipBodySpinScalar", false, 1.1}
 #define BAILY {"Wipeout_GroundBalanceTotal", false, 0}, {"Wipeout_GroundBalanceBase", false, 0}, {"Wipeout_GroundSkeletonMaxContact", false, 0}, {"Wipeout_AirSkeletonMaxContact", false, 0}, {"Wipeout_AirMaxSpeedIntoGround", false, 0}, {"Wipeout_AirMaxSpeedIntoStairs", false, 0}
   static const std::vector<Trial> trials = {
-      {"never bail ON,  X + LS down", 0, -1, 0, 0, 0x4000, {POP}},
-      {"never bail ON,  A + LS down", 0, -1, 0, 0, 0x1000, {POP}},
-      {"never bail OFF, X + LS down", 0, -1, 0, 0, 0x4000, {POP}},
-      {"never bail ON,  plain ollie after", 0, 0, 0, 0, 0, {POP}},
+      {"stock ollie", 0, 0, 0, 0, 0, {}},
+      {"engine gravity -4.9", 0, 0, 0, 0, 0, {{"image/822F8B40", false, -4.9}}},
+      {"vault WorldGravity -4.9", 0, 0, 0, 0, 0, {{"physics/default/WorldGravity+4", false, -4.9}}},
+      {"both gravities -4.9", 0, 0, 0, 0, 0, {{"image/822F8B40", false, -4.9}, {"physics/default/WorldGravity+4", false, -4.9}}},
+      {"speed-cons Gravity x0.5", 0, 0, 0, 0, 0, {{"physics_speed_conservation/default/Gravity", true, 0.5}}},
   };
   static int step = 0;
   static size_t trial = 0;
@@ -1591,6 +1712,97 @@ void SpinTest() {
   }
 }
 
+// Developer diagnostic (skate3_trainer_probe): every (0, -9.8, 0) vector in
+// read/write guest memory is a candidate for the live world gravity. Halve the
+// candidate set each scripted ollie, keeping the half that changes air time.
+void GravityProbe() {
+  namespace pr = practice;
+  static int step = 0;
+  static uint64_t tick0 = 0;
+  static std::vector<uint8_t*> cands;
+  static size_t lo = 0, hi = 0, mid = 0;
+  static int base_air = -1;
+  static float base_rise = 0;
+  const pr::Status st = pr::GetStatus();
+  const uint64_t t = st.marker_updates - tick0;
+  uint8_t* gbase = g_base.load();
+  auto next = [&](int n) {
+    step = n;
+    tick0 = st.marker_updates;
+  };
+  auto write = [&](size_t a, size_t b, float v) {
+    for (size_t i = a; i < b; ++i) {
+      if (HostReadable(cands[i], 12)) StoreBEf(cands[i] + 4, v);
+    }
+  };
+  switch (step) {
+    case 0:
+      if (!g_blob.load() || !st.marker_seen || t < 240) break;
+      cands = FindAll({0, 0, 0, 0, 0xC1, 0x1C, 0xCC, 0xCD, 0, 0, 0, 0}, 4096);
+      hi = cands.size();
+      REXLOG_INFO("trainer probe: {} gravity-vector candidates", cands.size());
+      pr::SetAutoCapture(false);
+      pr::SetNeverBail(true);
+      pr::SaveHere(0);
+      next(1);
+      break;
+    case 1:  // write the half under test, go back to the start spot
+      if (t < 90) break;
+      if (base_air >= 0) {
+        if (hi - lo <= 1 || cands.empty()) {
+          for (size_t i = lo; i < hi; ++i) {
+            REXLOG_INFO("trainer probe: RESULT gravity at guest {:08X}", uint32_t(cands[i] - gbase));
+          }
+          pr::DebugSetPad(false, 0, 0, 0, 0);
+          REXLOG_INFO("trainer probe: done");
+          next(99);
+          break;
+        }
+        mid = lo + (hi - lo) / 2;
+        write(lo, mid, -3.0f);
+        pr::GoTo(0);
+      }
+      next(2);
+      break;
+    case 2:
+      if (t < 300) break;
+      pr::DebugSetPad(true, 0, 0, 0, -1);
+      next(3);
+      break;
+    case 3:
+      if (t < 30) break;
+      pr::DebugSetPad(true, 0, 0, 0, 1);
+      pr::DebugResetMeasure();
+      next(4);
+      break;
+    case 4:
+      if (t < 8) break;
+      pr::DebugSetPad(true, 0, 0, 0, 0);
+      next(5);
+      break;
+    case 5: {
+      if (t < 420) break;
+      const pr::Measure m = pr::DebugMeasure();
+      if (base_air < 0) {
+        base_air = m.air_ticks;
+        base_rise = m.max_rise;
+        REXLOG_INFO("trainer probe: baseline air {} ticks rise {:.2f} m", base_air, base_rise);
+      } else {
+        const bool changed = m.air_ticks > base_air + 12 || m.max_rise > base_rise * 1.5f;
+        REXLOG_INFO("trainer probe: [{}, {}) of [{}, {}) air {} rise {:.2f} -> {}", lo, mid, lo, hi,
+                    m.air_ticks, m.max_rise, changed ? "CHANGED" : "same");
+        write(lo, mid, -9.8f);
+        if (changed) hi = mid;
+        else lo = mid;
+      }
+      next(1);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 // ================================================================ public
@@ -1659,6 +1871,10 @@ void Tick(uint8_t* base) {
       g_locate = Locate::kIdle;
     }
     if (!g_blob.load()) StartScan(base);
+  }
+  if (frame % 30 == 15 && g_blob.load()) {
+    std::lock_guard lock(g_mutex);
+    LocateImageLocked(base);
   }
   // Re-find the inline rows every ~2 s in the background.
   if (frame % 120 == 60 && g_blob.load()) {
@@ -1753,6 +1969,8 @@ void Tick(uint8_t* base) {
       }
     }
   }
+  if (REXCVAR_GET(skate3_trainer_dump)) DumpImage();
+  if (REXCVAR_GET(skate3_trainer_probe)) GravityProbe();
   if (REXCVAR_GET(skate3_trainer_selftest)) SelfTest();
   if (REXCVAR_GET(skate3_trainer_audit)) Audit();
   if (REXCVAR_GET(skate3_trainer_spintest)) SpinTest();

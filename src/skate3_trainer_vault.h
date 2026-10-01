@@ -17,7 +17,9 @@ namespace skate3::trainer::vault {
 // (PointGraphData8 / PointNegGraphData8); its stock value is 1.
 enum class Type { kF32, kBool, kI32, kU32, kGraphScale };
 
-enum Blob : uint8_t { kBin = 0, kVlt = 1 };  // skatercollections.bin / .vlt
+// skatercollections.bin / .vlt, or kImage: a constant in the game's loaded
+// executable (offset = guest address).
+enum Blob : uint8_t { kBin = 0, kVlt = 1, kImage = 2 };
 
 struct Field {
   std::string label, group, source;
