@@ -190,6 +190,16 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
   g_status.use_gate = REX_LOAD_U8(marker + kMarkerUseGate) != 0;
 
   if (g_measure_on && !g_auto_return) g_status.player_state = LocalPlayerState(ctx, base, self);
+  {
+    // State timeline (cheap): one log line per change.
+    static int32_t last_state = -2;
+    const int32_t now_state = (g_measure_on || g_auto_return) ? g_status.player_state : LocalPlayerState(ctx, base, self);
+    g_status.player_state = now_state;
+    if (now_state != last_state) {
+      REXLOG_INFO("trainer: skater state {} -> {}", last_state, now_state);
+      last_state = now_state;
+    }
+  }
   if (g_measure_on) {
     ++g_measure.ticks;
     if (g_status.player_state != 100) ++g_measure.air_ticks;

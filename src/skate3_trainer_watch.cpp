@@ -49,7 +49,9 @@ constexpr uintptr_t kPage = 0x1000;
 
 uint32_t GuestFunctionFor(uintptr_t rip) {
   auto it = std::upper_bound(g_funcs.begin(), g_funcs.end(), std::make_pair(rip, UINT32_MAX));
-  return it == g_funcs.begin() ? 0 : std::prev(it)->second;
+  // Past the last lifted function = host code (the trainer's own reads).
+  if (it == g_funcs.begin() || it == g_funcs.end()) return 0;
+  return std::prev(it)->second;
 }
 
 LONG CALLBACK Handler(EXCEPTION_POINTERS* ep) {
@@ -105,18 +107,23 @@ void Arm(const std::vector<Target>& targets) {
 void Report() {
   std::lock_guard lock(g_mutex);
   if (g_ranges.empty()) return;
-  REXLOG_INFO("trainer watch: {} reads so far", g_total.load());
+  static uint64_t last_game_reads = 0;
+  uint64_t game_reads = 0;
+  for (const auto& [key, count] : g_hits) game_reads += key.second ? count : 0;
+  if (game_reads == last_game_reads) return;  // only when the game read something new
+  last_game_reads = game_reads;
+  REXLOG_INFO("trainer watch: {} game reads so far", game_reads);
   for (size_t i = 0; i < g_ranges.size(); ++i) {
     std::string who;
     uint64_t n = 0;
     for (const auto& [key, count] : g_hits) {
-      if (key.first != i) continue;
+      if (key.first != i || !key.second) continue;
       n += count;
       char buf[48];
       std::snprintf(buf, sizeof(buf), " sub_%08X x%llu", key.second, static_cast<unsigned long long>(count));
       who += buf;
     }
-    REXLOG_INFO("trainer watch: {:44} {:6} reads{}", g_ranges[i].name, n, who);
+    if (n) REXLOG_INFO("trainer watch: {:44} {:6} reads{}", g_ranges[i].name, n, who);
   }
 }
 

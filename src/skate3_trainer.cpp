@@ -624,6 +624,25 @@ void NudgeLocked(Entry& e, int dir, bool fine, bool coarse) {
   if (uint8_t* blob = g_blob.load()) WriteEntry(e, blob, e.value);
 }
 
+// The game keeps one physics_mode collection per difficulty (easy / normal /
+// hardcore / ...) and switches between them, so an edit to one is copied to
+// the same field of every mode: the tuning survives a difficulty change.
+bool g_link_modes = true;
+void LinkModesLocked(const Entry& src) {
+  static const std::string kClass = "physics_mode/";
+  if (!g_link_modes || src.source.compare(0, kClass.size(), kClass) != 0) return;
+  const std::string field = src.source.substr(src.source.rfind('/'));
+  uint8_t* blob = g_blob.load();
+  for (Entry& e : g_entries) {
+    if (&e == &src || e.source.compare(0, kClass.size(), kClass) != 0) continue;
+    if (e.source.size() < field.size() || e.source.compare(e.source.size() - field.size(), field.size(), field) != 0) continue;
+    e.value = src.value;
+    e.frozen = src.frozen;
+    e.touched = true;
+    if (blob) WriteEntry(e, blob, e.value);
+  }
+}
+
 // XInput-style bit names on top of the runtime's portable pad state.
 using WORD = uint16_t;
 constexpr WORD XINPUT_GAMEPAD_DPAD_UP = rex::input::X_INPUT_GAMEPAD_DPAD_UP;
@@ -730,6 +749,7 @@ void PollPad() {
   }
   if (act & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_A |
              XINPUT_GAMEPAD_X)) {
+    LinkModesLocked(e);
     SaveUser();
   }
 }
@@ -1315,19 +1335,13 @@ void SpinTest() {
 #define POP {"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}
 #define SPIN {"PropBodySpinVsTime", false, 3}, {"#D7C6855B7814D048", false, 3}, {"MaxSpinSpeed", true, 3}
 #define FLIP {"FlipMaxSpeed", true, 4}, {"FlipScalar", true, 4}
+#define UFLIP {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}, {"FlipBodySpinScalar", false, 1.1}
   static const std::vector<Trial> trials = {
-      {"spin stock", -1, 0, 0, 0, 0, {POP}},
-      {"spin MaxAuto x4", -1, 0, 0, 0, 0, {POP, {"MaxAutoBodySpinSpeed", true, 4}}},
-      {"spin Easy only", -1, 0, 0, 0, 0, {POP, {"EasyBodySpins", false, 1}}},
-      {"spin Easy + MaxAuto x10", -1, 0, 0, 0, 0, {POP, {"EasyBodySpins", false, 1}, {"MaxAutoBodySpinSpeed", true, 10}}},
-      {"PRE RB + LS down", 0, -1, 0, 0, 0x0200, {POP}, true},
-      {"PRE RB + LS up", 0, 1, 0, 0, 0x0200, {POP}, true},
-      {"PRE LS down only", 0, -1, 0, 0, 0, {POP}, true},
-      {"PRE LS up only", 0, 1, 0, 0, 0, {POP}, true},
-      {"PRE RT + LS down", 0, -1, 0, 255, 0, {POP}, true},
-      {"PRE LB + LS down", 0, -1, 0, 0, 0x0100, {POP}, true},
-      {"PRE LS down perfect", 0, -1, 0, 0, 0, {POP, {"PerfectBodyFlips", false, 1}, {"EasyBodySpins", false, 1}}, true},
-      {"PRE RB + LS down perfect", 0, -1, 0, 0, 0x0200, {POP, {"PerfectBodyFlips", false, 1}, {"EasyBodySpins", false, 1}}, true},
+      {"1 no teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
+      {"2 after teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
+      {"3 after teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
+      {"4 stock flip", 0, -1, 0, 0, 0x0200, {POP}, true},
+      {"5 flip values again", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
   };
   static int step = 0;
   static size_t trial = 0;
@@ -1375,7 +1389,7 @@ void SpinTest() {
           }
         }
       }
-      pr::GoTo(0);
+      if (trial > 0) pr::GoTo(0);
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
@@ -1496,6 +1510,12 @@ void Tick(uint8_t* base) {
       // Anything the player set stays set: the game re-creates some rows
       // (session-marker return) and would silently go back to stock.
       if (e.frozen || e.touched) {
+        if (frame % 6 == 0 && e.type != Type::kGraphScale) {
+          const double live = ReadEntry(e, blob);
+          if (std::fabs(live - e.value) > 1e-4 * std::max(1.0, std::fabs(e.value))) {
+            REXLOG_INFO("trainer: the game changed {} to {} (re-applying {})", e.source, live, e.value);
+          }
+        }
         WriteEntry(e, blob, e.value);
       } else if (frame % 30 == 0) {
         e.value = ReadEntry(e, blob);  // follow the game's own changes
@@ -1510,7 +1530,7 @@ void Tick(uint8_t* base) {
       std::vector<watch::Target> targets;
       std::lock_guard lock(g_mutex);
       for (Entry& e : g_entries) {
-        if (e.group != "Spin" && e.group != "Flips") continue;
+        if (e.group != "Flips") continue;
         const size_t size = e.type == Type::kGraphScale ? 64 : 4;
         if (e.blob == vault::kVlt) {
           for (uint8_t* c : e.copies) targets.push_back({e.source, c, size});
@@ -1631,7 +1651,7 @@ void TrainerDialog::OnDraw(ImGuiIO& io) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 0.4f, 1));
             if (g_pad.scroll_to_row) ImGui::SetScrollHereY(0.5f), g_pad.scroll_to_row = false;
           }
-          if (ImGui::Checkbox("##freeze", &e.frozen)) e.touched = true, SaveUser();
+          if (ImGui::Checkbox("##freeze", &e.frozen)) e.touched = true, LinkModesLocked(e), SaveUser();
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("Freeze (rewrite every frame)");
           ImGui::SameLine();
           ImGui::SetNextItemWidth(170);
@@ -1650,6 +1670,7 @@ void TrainerDialog::OnDraw(ImGuiIO& io) {
           }
           if (changed) {
             e.touched = true;
+            LinkModesLocked(e);
             if (blob) WriteEntry(e, blob, e.value);
             SaveUser();
           }
