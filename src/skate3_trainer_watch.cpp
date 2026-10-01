@@ -27,6 +27,7 @@
 #include "generated/skate3_init.h"
 
 #include <rex/logging.h>
+#include <rex/system/thread_state.h>
 
 namespace skate3::trainer::watch {
 namespace {
@@ -40,6 +41,7 @@ std::mutex g_mutex;
 std::vector<Range> g_ranges;
 std::set<uintptr_t> g_pages;
 std::map<std::pair<size_t, uint32_t>, uint64_t> g_hits;  // (range, guest fn) -> reads
+std::map<std::pair<size_t, uint32_t>, std::set<uint32_t>> g_callers;  // same key -> guest return addresses seen
 std::vector<std::pair<uintptr_t, uint32_t>> g_funcs;      // host fn address -> guest
 PVOID g_handler = nullptr;
 thread_local uintptr_t t_rearm = 0;
@@ -63,7 +65,13 @@ LONG CALLBACK Handler(EXCEPTION_POINTERS* ep) {
     if (!g_pages.count(page)) return EXCEPTION_CONTINUE_SEARCH;
     for (size_t i = 0; i < g_ranges.size(); ++i) {
       if (addr >= g_ranges[i].begin && addr < g_ranges[i].end) {
-        ++g_hits[{i, GuestFunctionFor(ep->ContextRecord->Rip)}];
+        const uint32_t fn = GuestFunctionFor(ep->ContextRecord->Rip);
+        ++g_hits[{i, fn}];
+        // The accessing function's caller: the guest link register of this thread.
+        if (auto* ts = rex::runtime::ThreadState::Get()) {
+          auto& callers = g_callers[{i, fn}];
+          if (callers.size() < 8) callers.insert(static_cast<uint32_t>(ts->context()->lr));
+        }
         ++g_total;
       }
     }
@@ -117,11 +125,19 @@ void Report() {
     std::string who;
     uint64_t n = 0;
     for (const auto& [key, count] : g_hits) {
-      if (key.first != i || !key.second) continue;
+      if (key.first != i) continue;
       n += count;
       char buf[48];
       std::snprintf(buf, sizeof(buf), " sub_%08X x%llu", key.second, static_cast<unsigned long long>(count));
       who += buf;
+      if (auto it = g_callers.find(key); it != g_callers.end()) {
+        who += " (lr";
+        for (uint32_t lr : it->second) {
+          std::snprintf(buf, sizeof(buf), " %08X", lr);
+          who += buf;
+        }
+        who += ")";
+      }
     }
     if (n) REXLOG_INFO("trainer watch: {:44} {:6} reads{}", g_ranges[i].name, n, who);
   }
