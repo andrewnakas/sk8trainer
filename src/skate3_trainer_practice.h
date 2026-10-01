@@ -71,6 +71,7 @@ struct Measure {
   float tumble_total = 0; // degrees the skater's up axis moved (flips), unsigned
   float air_yaw = 0, air_tumble = 0;  // same, counted only while state != 100
   float max_rise = 0;     // metres above the height at reset
+  float max_speed = 0;    // m/s, since SetMeasureSpeed(true)
   int air_ticks = 0;      // sim ticks with state != 100 since reset
   int ticks = 0;
   std::string states;     // state ids seen since reset
@@ -95,6 +96,7 @@ void SetKeepFeetOn(bool on);
 bool KeepFeetOn();
 void DebugFreezeOrientation(int ticks);  // experiment: hold the skater's rotation for N sim ticks
 void DebugResetMeasure();
+void DebugResetMaxSpeed();
 Measure DebugMeasure();
 void DebugForceGameSet();  // the game places its own marker (like LB + d-pad down)
 SlotInfo Slot(int slot);

@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased (v0.4.0)
+Everything the other Skate 3 trainers and cheat tables offer that lives in the
+vault, plus practice tools. 405 values (was 178).
+- **Survey.** Every other Skate 3 trainer, cheat table and patch set that could
+  be found was read (CH3AT, The Mad Man's and matt's RPCS3 tables, Krinsher's
+  Realistic Mod, TMenu, tuukkas' and Tally Mark's tables, the Xbox 360 offset
+  threads). Their vault addresses map onto this build's `db.big` by one
+  constant, so each became a named field here.
+- **The vault parser reaches vectors, colours, curves and arrays** (one float
+  at a byte offset inside a field's data), which most of those values are.
+- New tabs: **Grinds & Tricks** (grind and ground friction, footplants,
+  no-comply pop, landing helper), **Hall of Meat** (every pose: glide speed,
+  spin, air friction), **Ragdoll**, **Scoring** (multipliers, when the HUD shows
+  air stats), **Look: Skater**, **Look: World**, **Engine**.
+- **Engine tab**: the live world gravity (found with a scripted search:
+  an ollie rose 1.39 m, then 2.49 m at -3.0) and eight constants from the
+  game executable (jump power, hippy / on-foot jump, boneless speed boost,
+  slow-motion factor, stick scales, shadow distance, visibility). Each is used
+  only when the running game holds the expected value.
+- New presets: Realistic (after Krinsher's Realistic Mod, vault part), Floppy
+  Ragdoll, Super Glide, Slow Fall, Footplant Forever, Score x10. **Moon** now
+  lowers the real gravity.
+- **Practice**: pause and frame step (End / Shift+End), Bail now, position and
+  speed readout, teleport to coordinates.
+- **Never Bail** no longer leaves the skater "running" on the board:
+  - a push button held in the air (foot off for a footplant) is ignored while
+    airborne (option, on by default);
+  - when the game starts its bail-out pose anyway, the skater is put straight
+    back to riding where they are, upright, with their speed handed back
+    (option, on by default; it uses the game's own skater reset).
+- Developer diagnostics: `skate3_trainer_dump` (loaded image to a file),
+  `skate3_trainer_probe`.
+
 ## v0.3.0 — 2026-09-30
 Never bail, multi-flips, stacking presets, 178 values (was 81).
 - **Never Bail** that works. Three layers: every bail threshold out of reach

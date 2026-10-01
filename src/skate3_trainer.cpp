@@ -1041,6 +1041,8 @@ void DrawPracticeLocked(int pad_row) {
     if (ImGui::SmallButton("Step 10")) pr::Step(10);
     ImGui::SameLine();
     if (ImGui::SmallButton("Bail now")) pr::BailNow();
+    bool no_bounds = pr::NoBounds();
+    if (ImGui::Checkbox("Ignore out-of-bounds signals (experimental, untested)", &no_bounds)) pr::SetNoBounds(no_bounds);
     if (st.have_position) {
       ImGui::Text("Position %.1f, %.1f, %.1f    Speed %.1f m/s (%.0f km/h)", st.x, st.y, st.z, st.speed,
                   st.speed * 3.6f);
@@ -1735,10 +1737,10 @@ void SpinTest() {
 #define UFLIP {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}, {"FlipBodySpinScalar", false, 1.1}
 #define BAILY {"Wipeout_GroundBalanceTotal", false, 0}, {"Wipeout_GroundBalanceBase", false, 0}, {"Wipeout_GroundSkeletonMaxContact", false, 0}, {"Wipeout_AirSkeletonMaxContact", false, 0}, {"Wipeout_AirMaxSpeedIntoGround", false, 0}, {"Wipeout_AirMaxSpeedIntoStairs", false, 0}
   static const std::vector<Trial> trials = {
-      {"X held in air then let go", 0, -1, 0, 0, 0x4000, {POP}},
-      {"push, A held + LS right", 1, 0, 0, 0, 0x1000, {POP}},
-      {"push, X held whole time", 0, -1, 0, 0, 0x4000, {POP}},
-      {"plain ollie after (2)", 0, 0, 0, 0, 0, {POP}},
+#define FAST {"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4}, {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4}
+      {"pushlong stock", 0, 0, 0, 0, 0, {}},
+      {"pushlong Fast preset", 0, 0, 0, 0, 0, {FAST}},
+      {"pushlong Fast x10", 0, 0, 0, 0, 0, {{"MaxPushableSpeed", true, 10}, {"#501D5581043D7D3C", true, 10}, {"MaxPushDVStart", true, 10}, {"MaxPushDVEnd", true, 10}}},
   };
   static int step = 0;
   static size_t trial = 0;
@@ -1792,7 +1794,8 @@ void SpinTest() {
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
-      if (t < 420) {
+      if (t == 100) pr::DebugResetMaxSpeed();
+      if (t < (std::strstr(trials[trial].name, "pushlong") ? 1500u : 420u)) {
         // "push" trials: tap A to roll away from the start spot first.
         if (std::strstr(trials[trial].name, "push") && t > 120) {
           pr::DebugSetPad(true, 0, 0, 0, 0, (t / 20) % 2 ? 0x1000 : 0);
@@ -1817,10 +1820,10 @@ void SpinTest() {
       break;
     case 5: {  // through the air and the landing
       if (std::strstr(trials[trial].name, "release") && t == 170) pr::DebugSetPad(true, 0, 0, 0, 0);
-      if (std::strstr(trials[trial].name, "long") ? t < 600 : t < 300) break;
+      if (t < (std::strstr(trials[trial].name, "verylong") ? 2700u : std::strstr(trials[trial].name, "long") ? 600u : 300u)) break;
       const pr::Measure m = pr::DebugMeasure();
-      REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  air {:3}/{} ticks  tracking {}  bails blocked {}  states{}",
-                  trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.air_ticks, m.ticks, m.tracking, st.bails_blocked, m.states);
+      REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  top {:5.1f} m/s  air {:3}/{} ticks  tracking {}  bails blocked {}  states{}",
+                  trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.max_speed, m.air_ticks, m.ticks, m.tracking, st.bails_blocked, m.states);
       pr::DebugSetPad(true, 0, 0, 0, 0);
       ++trial;
       next(1);

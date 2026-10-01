@@ -47,12 +47,27 @@ button is on by default on Android and iOS (`skate3_trainer_button`).
 
 ### Practice keys (keyboard)
 **Home** go to the selected slot · **Shift+Home** save the selected slot here ·
-**PgUp/PgDn** pick a slot · **Delete** toggle half speed.
+**PgUp/PgDn** pick a slot · **Delete** toggle half speed · **End** pause ·
+**Shift+End** step one frame.
 
 ## What's in it
 
-**Physics tabs** (Pop & Jump, Gravity & Speed, Spin, Flips, Bails, World): 178
-values, every one the game's own AttribSys tuning, edited live:
+**Value tabs**: 405 values, edited live. All but nine are the game's own
+AttribSys tuning; the Engine tab holds the live world gravity and eight
+constants from the game executable.
+
+- **Grinds & Tricks**: grind and ground friction, footplant height / damage /
+  speed cap, no-comply pop, vert pump, landing helper
+- **Hall of Meat**: for every pose (spread eagle, torpedo, judo kick, cannon
+  ball, free fall): glide speed and cap, spin, air friction (slow fall)
+- **Ragdoll**: stiffness, damping, rebound, settle time, the bail timers
+- **Scoring**: score multipliers, when the HUD shows airtime / distance / height
+- **Look: Skater**, **Look: World**: brightness and colour of skater, board,
+  cars, NPCs; fog, sky, sun position, bloom, shadows, render distance
+- **Engine**: world gravity, jump power, hippy / on-foot jump, boneless speed
+  boost, slow-motion factor, stick scales, shadow distance, visibility
+
+**Pop & Jump, Gravity & Speed, Spin, Flips, Bails, World**:
 - every ollie / jump height for each difficulty mode, pop bonus, hippy and
   off-board jump height
 - slope gravity, push top speed and power, run speed, auto push, pump
@@ -81,7 +96,13 @@ reset it to stock. Your changes are saved to `<user data>/trainer/user.toml` and
 | **Fast** | Push top speed x4, push power x4, run speed x3 |
 | **Locked In** | Never Bail + Land Any Angle + easy spins + controllable multi-flips |
 | **Big Air** | All of the above at once |
-| **Moon**, **THPS** | Floaty low-gravity feel; arcade spins and auto push |
+| **Moon**, **THPS** | Real low gravity (x0.4); arcade spins and auto push |
+| **Realistic** | Smaller pops, more friction, weaker push, harder falls, limp ragdoll (after Krinsher's Realistic Mod, vault values only) |
+| **Floppy Ragdoll**, **Super Glide**, **Slow Fall** | Hall of Meat: limp bails, long fast glides, slow falls |
+| **Footplant Forever**, **Score x10** | Footplants keep popping and never hurt; every trick scores x10 |
+
+The presets in the last three rows and the new tabs are checked for writing and
+holding their values, not yet for feel.
 
 **Practice tab**
 - **Game speed** 0.05x to 2x. It scales the sim tick rate, the same thing the
@@ -94,8 +115,18 @@ reset it to stock. Your changes are saved to `<user data>/trainer/user.toml` and
 - **NEVER BAIL** checkbox (remembered between launches). It works on three
   levels: bail thresholds out of reach, detected bails dropped, and the skater's
   state machine not allowed to enter the bail state. AI skaters still fall.
-  If the game demands a bail on every tick for 2 s, it is let through so you can
-  never get stuck.
+  Two options under it, both on by default:
+  - *never run on the board*: some bails are decided by the animation side (a
+    landing it judges hopeless); the skater then "runs" on the board until the
+    bail happens. The trainer puts them straight back to riding where they are,
+    upright, with their speed handed back. It uses the game's own skater reset
+    aimed just ahead of the skater; your session marker is left as it was.
+    Off = that bail is let through after 2 s.
+  - *keep both feet on in the air*: a push button held in the air takes a foot
+    off for a footplant, and landing like that bails. A / X are ignored while
+    airborne. Turn it off to do footplants.
+- **Pause** and **frame step**, **Bail now**, a **position and speed readout**,
+  and **teleport to coordinates** (uses the selected slot).
 - **Perfect finish** (experimental): flips rotate only while a grab trigger is
   held.
 
@@ -156,6 +187,11 @@ vault_selftest.exe "<game folder containing data/big/db.big>"
 
 ## Credits
 - CH3AT by ckosmic, for the idea and the list of values worth exposing.
+- The other Skate 3 tables and tools surveyed for v0.4.0, which showed which
+  values matter: matt's All in One Cheat Table, The Mad Man's tables, Krinsher's
+  Realistic Mod, TMenu by TyDubayGamez, tuukkas' and Tally Mark's tables, and
+  the Xbox 360 offsets posted by NDx and Son G0ku. No file from any of them is
+  included; every value is read from your own game.
 - The AttribSys vault layout follows NFSTools/VaultLib (MIT).
 - The rexglue SDK and the Skate 3 recompilation it plugs into.
 

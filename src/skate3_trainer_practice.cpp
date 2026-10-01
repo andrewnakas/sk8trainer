@@ -192,6 +192,7 @@ bool g_marker_borrowed = false;  // the game marker holds the recovery spot
 SlotData g_marker_saved;         // what it held before
 bool g_marker_saved_has = false;
 float g_live_velocity[3] = {};
+float g_max_speed = 0;
 // Holding a push button (A / X) in the air takes that foot off the board for
 // a footplant. Landing like that starts the bail-out animation too. With
 // Never bail on, those two buttons are not passed to the game while airborne.
@@ -293,6 +294,7 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
       const float vx = LoadF(base, body + 80), vy = LoadF(base, body + 84), vz = LoadF(base, body + 88);
       g_status.speed = std::sqrt(vx * vx + vy * vy + vz * vz);
       g_live_velocity[0] = vx, g_live_velocity[1] = vy, g_live_velocity[2] = vz;
+      g_max_speed = std::max(g_max_speed, g_status.speed);
       if (g_recover_velocity_ticks > 0 && !g_marker_borrowed && g_force_return_frames == 0 &&
           g_status.player_state == 100) {
         --g_recover_velocity_ticks;
@@ -687,9 +689,15 @@ void DebugResetMeasure() {
   g_measure_states.clear();
 }
 
+void DebugResetMaxSpeed() {
+  std::lock_guard lock(g_mutex);
+  g_max_speed = 0;
+}
+
 Measure DebugMeasure() {
   std::lock_guard lock(g_mutex);
   Measure m = g_measure;
+  m.max_speed = g_max_speed;
   for (int32_t s : g_measure_states) m.states += " " + std::to_string(s);
   return m;
 }
