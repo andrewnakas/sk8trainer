@@ -405,21 +405,31 @@ std::vector<uint8_t*> FindAll(const std::vector<uint8_t>& pattern, size_t limit)
 // Finds each inline (.vlt) field's live value: the game keeps collection
 // entries as [8-byte field key][4-byte value][type][flags], so the key
 // followed by the stock value identifies the row. One pass, 4-byte aligned.
-int LocateInline() {
+int LocateInline(bool quiet = false) {
   struct Want {
     Entry* e;
     uint8_t key[8];
-    uint8_t value[4];
+    uint8_t value[4];   // stock value
+    uint8_t value2[4];  // the value the trainer last wrote
     int hits = 0;
+    std::vector<uint8_t*> found;
   };
   std::vector<Want> wants;
   {
     std::lock_guard lock(g_mutex);
     for (Entry& e : g_entries) {
       if (e.blob != vault::kVlt) continue;
-      e.direct = nullptr;
-      e.copies.clear();
       Want w{&e};
+      {
+        uint32_t b2 = 0;
+        if (e.type == Type::kF32) {
+          float f = static_cast<float>(e.value);
+          std::memcpy(&b2, &f, 4);
+        } else {
+          b2 = static_cast<uint32_t>(static_cast<int64_t>(e.value));
+        }
+        for (int k = 0; k < 4; ++k) w.value2[k] = uint8_t(b2 >> (24 - 8 * k));
+      }
       for (int k = 0; k < 8; ++k) w.key[k] = uint8_t(e.key >> (56 - 8 * k));
       uint32_t bits = 0;
       if (e.type == Type::kF32) {
@@ -450,9 +460,10 @@ int LocateInline() {
       const uint8_t* end = region + info.region_size - 12;
       for (const uint8_t* p = region; p <= end; p += 4) {
         for (Want& w : wants) {
-          if (p[0] == w.key[0] && std::memcmp(p, w.key, 8) == 0 && std::memcmp(p + 8, w.value, 4) == 0) {
-            if (w.hits++ == 0) w.e->direct = const_cast<uint8_t*>(p + 8);
-            w.e->copies.push_back(const_cast<uint8_t*>(p + 8));
+          if (p[0] == w.key[0] && std::memcmp(p, w.key, 8) == 0 &&
+              (std::memcmp(p + 8, w.value, 4) == 0 || std::memcmp(p + 8, w.value2, 4) == 0)) {
+            ++w.hits;
+            w.found.push_back(const_cast<uint8_t*>(p + 8));
           }
         }
       }
@@ -460,10 +471,24 @@ int LocateInline() {
     a = next > a ? next : a + 0x1000;
   }
   int found = 0;
+  std::lock_guard lock(g_mutex);
+  uint8_t* bin = g_blob.load();
+  for (Want& w : wants) {
+    if (w.found.empty()) continue;  // keep what we had
+    const bool changed = w.found != w.e->copies;
+    w.e->copies = w.found;
+    w.e->direct = w.found.front();
+    // The game makes fresh copies of these rows (e.g. after a session-marker
+    // return): push the player's value into every copy again.
+    if (changed && (w.e->frozen || w.e->touched)) WriteEntry(*w.e, bin ? bin : w.e->direct, w.e->value);
+    if (changed && quiet) REXLOG_INFO("trainer: inline {} now has {} cop{}", w.e->source, w.hits, w.hits == 1 ? "y" : "ies");
+  }
   for (const Want& w : wants) {
     found += w.e->direct != nullptr;
-    REXLOG_INFO("trainer: inline {} -> {} ({} match{})", w.e->source,
-                w.e->direct ? "found" : "NOT found", w.hits, w.hits == 1 ? "" : "es");
+    if (!quiet) {
+      REXLOG_INFO("trainer: inline {} -> {} ({} match{})", w.e->source,
+                  w.e->direct ? "found" : "NOT found", w.hits, w.hits == 1 ? "" : "es");
+    }
   }
   return found;
 }
@@ -1455,10 +1480,22 @@ void Tick(uint8_t* base) {
     }
     if (!g_blob.load()) StartScan(base);
   }
+  // Re-find the inline rows every ~2 s in the background.
+  if (frame % 120 == 60 && g_blob.load()) {
+    static std::atomic<bool> busy{false};
+    if (!busy.exchange(true)) {
+      std::thread([] {
+        LocateInline(true);
+        busy = false;
+      }).detach();
+    }
+  }
   if (uint8_t* blob = g_blob.load()) {
     std::lock_guard lock(g_mutex);
     for (Entry& e : g_entries) {
-      if (e.frozen) {
+      // Anything the player set stays set: the game re-creates some rows
+      // (session-marker return) and would silently go back to stock.
+      if (e.frozen || e.touched) {
         WriteEntry(e, blob, e.value);
       } else if (frame % 30 == 0) {
         e.value = ReadEntry(e, blob);  // follow the game's own changes
