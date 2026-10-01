@@ -26,6 +26,7 @@ struct Status {
   int timer_hz_live = 0;        // read back from the guest timer object
   uint64_t marker_updates = 0;  // session-marker update calls (one per sim tick)
   uint8_t pad_lt = 0, pad_rt = 0;  // the triggers the game last read
+  int bails_blocked = 0;        // bail transitions refused by Never bail
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
   std::string last_event;
@@ -57,6 +58,11 @@ struct Measure {
   int ticks = 0;
   std::string states;     // state ids seen since reset
 };
+// Never bail: the skater's state machine is never allowed to enter the bail
+// state (300).
+void SetNeverBail(bool on);
+bool NeverBail();
+void DebugFreezeOrientation(int ticks);  // experiment: hold the skater's rotation for N sim ticks
 void DebugResetMeasure();
 Measure DebugMeasure();
 void DebugForceGameSet();  // the game places its own marker (like LB + d-pad down)

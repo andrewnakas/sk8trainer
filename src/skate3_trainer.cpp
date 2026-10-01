@@ -495,6 +495,9 @@ int LocateInline(bool quiet = false) {
   return found;
 }
 
+void LoadOptions();
+void SaveOptions();
+
 void ScanThread(uint8_t* base) {
   int best_count = 0, vlt_count = 0;
   uint32_t hits = 0;
@@ -517,7 +520,10 @@ void ScanThread(uint8_t* base) {
       if (std::fabs(e.value - e.stock) < 1e-4 * std::max(1.0, std::fabs(e.stock))) ++matches;
     }
     g_stock_matches = matches;
-    if (REXCVAR_GET(skate3_trainer_apply_saved)) ApplySavedLocked(best);
+    if (REXCVAR_GET(skate3_trainer_apply_saved)) {
+      ApplySavedLocked(best);
+      LoadOptions();
+    }
     g_blob = best;
     g_locate = Locate::kFound;
     char buf[160];
@@ -589,7 +595,10 @@ const std::vector<Preset>& Presets() {
 void ApplyPresetLocked(const Preset& preset) {
   uint8_t* blob = g_blob.load();
   if (preset.rules.empty()) g_perfect_finish = false;
-  if (std::string(preset.name) == "Locked In") g_perfect_finish = true;
+  if (std::string(preset.name) == "Locked In" || std::string(preset.name) == "Never Bail") {
+    practice::SetNeverBail(true);
+    SaveOptions();
+  }
   for (Entry& e : g_entries) {
     double v = e.stock;
     bool hit = false;
@@ -646,6 +655,20 @@ void NudgeLocked(Entry& e, int dir, bool fine, bool coarse) {
 // hardcore / ...) and switches between them, so an edit to one is copied to
 // the same field of every mode: the tuning survives a difficulty change.
 bool g_link_modes = true;
+
+std::filesystem::path OptionsPath() { return TrainerFolder() / "options.txt"; }
+void SaveOptions() {
+  std::error_code ec;
+  std::filesystem::create_directories(TrainerFolder(), ec);
+  std::ofstream(OptionsPath()) << "never_bail=" << (practice::NeverBail() ? 1 : 0) << std::endl;
+}
+void LoadOptions() {
+  std::ifstream in(OptionsPath());
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind("never_bail=", 0) == 0) practice::SetNeverBail(line.size() > 11 && line[11] == '1');
+  }
+}
 
 void LinkModesLocked(const Entry& src) {
   static const std::string kClass = "physics_mode/";
@@ -835,7 +858,16 @@ void DrawPracticeLocked(int pad_row) {
   mark(pr::kSlots + 1);
   bool auto_return = pr::AutoReturn();
   float delay = pr::AutoReturnDelay();
-  ImGui::Checkbox("Perfect finish: flip only while grabbing; release any time = stop + square up", &g_perfect_finish);
+  {
+    bool never = pr::NeverBail();
+    if (ImGui::Checkbox("NEVER BAIL (the game is not allowed to start a bail)", &never)) {
+      pr::SetNeverBail(never);
+      SaveOptions();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d refused", pr::GetStatus().bails_blocked);
+  }
+  ImGui::Checkbox("Perfect finish (experimental): flip only while grabbing; release = stop + square up", &g_perfect_finish);
   if (ImGui::Checkbox("Auto-return to selected slot after a bail", &auto_return)) {
     pr::SetAutoReturn(auto_return, delay);
   }
@@ -1356,12 +1388,12 @@ void SpinTest() {
 #define SPIN {"PropBodySpinVsTime", false, 3}, {"#D7C6855B7814D048", false, 3}, {"MaxSpinSpeed", true, 3}
 #define FLIP {"FlipMaxSpeed", true, 4}, {"FlipScalar", true, 4}
 #define UFLIP {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}, {"FlipBodySpinScalar", false, 1.1}
+#define BAILY {"Wipeout_GroundBalanceTotal", false, 0}, {"Wipeout_GroundBalanceBase", false, 0}, {"Wipeout_GroundSkeletonMaxContact", false, 0}, {"Wipeout_AirSkeletonMaxContact", false, 0}, {"Wipeout_AirMaxSpeedIntoGround", false, 0}, {"Wipeout_AirMaxSpeedIntoStairs", false, 0}
   static const std::vector<Trial> trials = {
-      {"1 no teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
-      {"2 after teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
-      {"3 after teleport, flip values", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
-      {"4 stock flip", 0, -1, 0, 0, 0x0200, {POP}, true},
-      {"5 flip values again", 0, -1, 0, 0, 0x0200, {POP, UFLIP}, true},
+      {"never bail ON,  X + LS down", 0, -1, 0, 0, 0x4000, {POP}},
+      {"never bail ON,  A + LS down", 0, -1, 0, 0, 0x1000, {POP}},
+      {"never bail OFF, X + LS down", 0, -1, 0, 0, 0x4000, {POP}},
+      {"never bail ON,  plain ollie after", 0, 0, 0, 0, 0, {POP}},
   };
   static int step = 0;
   static size_t trial = 0;
@@ -1410,6 +1442,7 @@ void SpinTest() {
         }
       }
       if (trial > 0) pr::GoTo(0);
+      pr::SetNeverBail(trial != 2);
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
@@ -1431,10 +1464,10 @@ void SpinTest() {
       next(5);
       break;
     case 5: {  // through the air and the landing
-      if (t < 200) break;
+      if (t < 300) break;
       const pr::Measure m = pr::DebugMeasure();
-      REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  air {:3}/{} ticks  tracking {}  states{}",
-                  trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.air_ticks, m.ticks, m.tracking, m.states);
+      REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  air {:3}/{} ticks  tracking {}  bails blocked {}  states{}",
+                  trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.air_ticks, m.ticks, m.tracking, st.bails_blocked, m.states);
       pr::DebugSetPad(true, 0, 0, 0, 0);
       ++trial;
       next(1);

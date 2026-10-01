@@ -155,12 +155,30 @@ float Be32f(const uint8_t* p) {
 }
 
 uint32_t g_last_actor = 0;
+bool g_never_bail = false;
+int g_detect_streak = 0;
+uint32_t g_local_state = 0;  // the local player's state object (AI skaters have their own)
+int g_block_streak = 0;  // consecutive ticks a bail was refused
+// vfunc20(actor+44): [+0] -> object with the skater's 4x4 world matrix at +64
+// (sub_82592A00), [+4] -> object with the velocity at +80, [+28] -> state.
+uint32_t g_bundle = 0;
+int g_exp_ticks = 0;
+bool g_exp_have = false;
+std::array<uint8_t, 48> g_exp_rot{};
 
 float LoadF(uint8_t* base, uint32_t addr) {
   const uint32_t v = REX_LOAD_U32(addr);
   float f;
   std::memcpy(&f, &v, 4);
   return f;
+}
+
+// The state machine's body pointer ([state+4]) points 0xDD0 into the big
+// physics object at [bundle+24]; AI skaters have their own.
+bool IsLocalBody(uint8_t* base, uint32_t body) {
+  if (!g_bundle || !GuestReadable(g_bundle + 24, 4)) return false;
+  const uint32_t physics = REX_LOAD_U32(g_bundle + 24);
+  return physics && body >= physics && body < physics + 0x2000;
 }
 
 int32_t LocalPlayerState(PPCContext& ctx, uint8_t* base, uint32_t self) {
@@ -177,7 +195,9 @@ int32_t LocalPlayerState(PPCContext& ctx, uint8_t* base, uint32_t self) {
   call.r3.u64 = iface;
   const uint32_t bundle = CallIndirect(call, base, REX_LOAD_U32(vtable + 20));
   if (!GuestReadable(bundle + 28, 4)) return -1;
+  g_bundle = bundle;
   const uint32_t state = REX_LOAD_U32(bundle + 28);
+  g_local_state = state;
   return GuestReadable(state + 16, 4) ? static_cast<int32_t>(REX_LOAD_U32(state + 16)) : -1;
 }
 
@@ -204,7 +224,31 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
     ++g_measure.ticks;
     if (g_status.player_state != 100) ++g_measure.air_ticks;
     g_measure_states.insert(g_status.player_state);
-    if (!g_track_addr && g_force_return_frames == 0 && g_pending_goto < 0) g_force_set = true;  // marker follows the skater
+    g_track_addr = 0;
+    if (g_bundle && GuestReadable(g_bundle, 8)) {
+      const uint32_t holder = REX_LOAD_U32(g_bundle);
+      if (GuestReadable(holder + 64, 64)) g_track_addr = holder + 64;
+    }
+    g_track_actor = g_last_actor;
+  }
+  if (g_exp_ticks > 0 && g_track_addr) {
+    const uint32_t body = REX_LOAD_U32(g_bundle + 4);
+    const float yaw = std::atan2(LoadF(base, g_track_addr + 8), LoadF(base, g_track_addr)) * 57.29578f;
+    if (!g_exp_have) {
+      for (uint32_t i = 0; i < 48; ++i) g_exp_rot[i] = REX_LOAD_U8(g_track_addr + i);
+      g_exp_have = true;
+    }
+    std::string v;
+    if (GuestReadable(body + 64, 96)) {
+      char buf[24];
+      for (uint32_t o = 64; o < 160; o += 4) {
+        std::snprintf(buf, sizeof(buf), " %.2f", LoadF(base, body + o));
+        v += buf;
+      }
+    }
+    REXLOG_INFO("trainer: exp tick {} yaw before write {:.1f} | body+64..:{}", g_exp_ticks, yaw, v);
+    for (uint32_t i = 0; i < 48; ++i) REX_STORE_U8(g_track_addr + i, g_exp_rot[i]);
+    if (--g_exp_ticks == 0) g_exp_have = false;
   }
   if (g_measure_on && g_track_addr && g_last_actor == g_track_actor && GuestReadable(g_track_addr, 64)) {
     const float yaw = std::atan2(LoadF(base, g_track_addr + 8), LoadF(base, g_track_addr)) * 57.29578f;
@@ -411,6 +455,21 @@ void DebugSetPad(bool active, float lx, float ly, float rx, float ry, uint16_t b
   g_pad = {active, s16(lx), s16(ly), s16(rx), s16(ry), buttons, lt, rt};
 }
 
+void SetNeverBail(bool on) {
+  std::lock_guard lock(g_mutex);
+  g_never_bail = on;
+}
+bool NeverBail() {
+  std::lock_guard lock(g_mutex);
+  return g_never_bail;
+}
+
+void DebugFreezeOrientation(int ticks) {
+  std::lock_guard lock(g_mutex);
+  g_exp_ticks = ticks;
+  g_exp_have = false;
+}
+
 void DebugResetMeasure() {
   std::lock_guard lock(g_mutex);
   g_measure_on = true;
@@ -557,6 +616,72 @@ extern "C" REX_FUNC(sub_82898FC8) {
   __imp__sub_82898FC8(ctx, base);
   t_in_marker_update = false;
   if (marker) AfterMarkerUpdate(base, self, marker);
+}
+
+// Skater state machine: next = Decide(state object, current id). It returns
+// the current id for "no change" and 300 to start a bail; the bail request is
+// bit 0x00040000 of [[state+4]+2468]. With Never bail on, the request is
+// cleared and a 300 result becomes "no change". If that holds for 3 s in a row
+// the bail is let through, so the skater can never get stuck.
+extern "C" REX_FUNC(__imp__sub_82D8ADE8);
+extern "C" REX_FUNC(sub_82D8ADE8) {
+  const uint32_t self = ctx.r3.u32, current = ctx.r4.u32;
+  bool on;
+  {
+    std::lock_guard lock(g_mutex);
+    on = g_never_bail && current != 300 && GuestReadable(self + 4, 4) && IsLocalBody(base, REX_LOAD_U32(self + 4));
+  }
+  bool requested = false;
+  if (on && GuestReadable(self + 4, 4)) {
+    const uint32_t body = REX_LOAD_U32(self + 4);
+    if (GuestReadable(body + 2468, 4)) {
+      const uint32_t flags = REX_LOAD_U32(body + 2468);
+      requested = (flags & 0x00040000u) != 0;
+      std::lock_guard lock(g_mutex);
+      // A bail asked for on every tick for 2 s is let through (never stuck).
+      if (requested && g_block_streak < 120) REX_STORE_U32(body + 2468, flags & ~0x00040000u);
+    }
+  }
+  __imp__sub_82D8ADE8(ctx, base);
+  std::lock_guard lock(g_mutex);
+  if (!on) return;
+  const bool wants_bail = ctx.r3.u32 == 300;
+  if (wants_bail && g_block_streak < 120) ctx.r3.u64 = current;
+  if (requested || wants_bail) {
+    if (g_block_streak++ == 0) {
+      ++g_status.bails_blocked;
+      REXLOG_INFO("trainer: never bail - refused a bail REQUEST in state {}", current);
+    }
+    if (g_block_streak == 120) REXLOG_INFO("trainer: never bail - bail asked for 2 s straight, letting it through");
+  } else {
+    g_block_streak = 0;
+  }
+}
+
+// Bail detector hand-off: sub_82D86DE8(owner, w) turns "a bail condition was
+// detected" (byte w+384, set by the contact / landing / balance checks) into
+// the bail request above. With Never bail on, the detection is dropped here
+// for the local skater, before anything else reacts to it.
+extern "C" REX_FUNC(__imp__sub_82D86DE8);
+extern "C" REX_FUNC(sub_82D86DE8) {
+  const uint32_t owner = ctx.r3.u32, w = ctx.r4.u32;
+  bool drop = false;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_never_bail && GuestReadable(owner, 4) && GuestReadable(w + 384, 1)) {
+      drop = IsLocalBody(base, REX_LOAD_U32(owner)) && REX_LOAD_U8(w + 384) != 0;
+      if (drop) {
+        REX_STORE_U8(w + 384, 0);
+        if (g_detect_streak++ == 0) {
+          ++g_status.bails_blocked;
+          REXLOG_INFO("trainer: never bail - dropped a detected bail (state {})", g_status.player_state);
+        }
+      } else {
+        g_detect_streak = 0;
+      }
+    }
+  }
+  __imp__sub_82D86DE8(ctx, base);
 }
 
 // XInputGetState(user, state*) wrapper: scripted pad for the spin test.
