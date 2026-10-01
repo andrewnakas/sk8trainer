@@ -280,6 +280,9 @@ constexpr Curated kCurated[] = {
     {"Jump height C", "Pop & Jump", "physics_mode", nullptr, "#703829BD711E54DE", 0, 50},
     {"Jump height D", "Pop & Jump", "physics_mode", nullptr, "#B2B1170AFFC8AC69", 0, 50},
     {"Jump min height 2", "Pop & Jump", "physics_mode", nullptr, "#BE3F74F978D777E5", 0, 50},
+    {"Perfect body flips (locks to ONE flip)", "Flips", "physics_mode", nullptr, "PerfectBodyFlips", 0, 1},
+    {"Landing: align-to-ground max angle", "Flips", "physics_airstates", "default", "DontAlignAnglePhysicsAir", 0, 4},
+    {"Landing: align-to-ground speed", "Flips", "physics_airstates", "default", "SpeedToAlignToGround_PhysAir", 0, 5},
     {"Slow-mo fps at scale 1", "World", "slowmotion_controller", "default", "fps_at_scale_one", 1, 240},
 };
 
