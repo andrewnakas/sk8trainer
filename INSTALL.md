@@ -22,7 +22,7 @@ You need your own copy of **Skate 3 for Xbox 360** (a disc image / ISO) and
    [Releases](https://github.com/andrewnakas/sk8trainer/releases/latest).
    Optionally, check it against `SHA256SUMS`:
    ```powershell
-   Get-FileHash .\sk8trainer-0.2.0-windows-x86_64.zip -Algorithm SHA256
+   Get-FileHash .\sk8trainer-0.3.0-windows-x86_64.zip -Algorithm SHA256
    ```
 2. Unzip it into a folder you can write to, such as `Documents\Skate3`. Avoid
    `Program Files`.
@@ -33,7 +33,7 @@ You need your own copy of **Skate 3 for Xbox 360** (a disc image / ISO) and
    to the game.
 5. Start skating, then press **Insert** or hold **Back + LB + RB** on your
    controller. The SK8TRAINER panel opens, and its top line should turn green
-   with "vault at … 81/81 stock values".
+   with "vault at … 178/178 stock values".
 
 Folder contents:
 ```
@@ -136,6 +136,7 @@ slot · **Delete** half speed.
 | `skate3_trainer` | `true` | Turns the whole trainer on or off |
 | `skate3_trainer_button` | `false` desktop / `true` mobile | Shows the on-screen **SK8** button |
 | `skate3_trainer_apply_saved` | `true` | Re-applies your saved values at launch |
+| `skate3_trainer_audit` | `false` | In gameplay, tests every slider, preset, saved values, game speed, marker slots and bail handling; writes `<user data>/trainer/audit-report.txt` (then restores everything) |
 | `skate3_trainer_selftest` | `false` | In gameplay, tests every feature and writes `trainer selftest:` lines to the log (then restores stock) |
 
 Your values are saved in `<user data>/trainer/user.toml`. On Windows that's

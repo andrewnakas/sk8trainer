@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.3.0 — 2026-09-30
+Never bail, multi-flips, stacking presets, 178 values (was 81).
+- **Never Bail** that works. Three layers: every bail threshold out of reach
+  (how other Skate 3 trainers do it, so landings look normal), detected bails
+  dropped (`sub_82D86DE8`), wipeout commands from hits ignored
+  (`sub_82592390`), and the skater state machine (`sub_82D8ADE8`) not allowed
+  to return state 300. Local skater only. A bail demanded on every tick for
+  2 s is let through, so the skater cannot get stuck.
+- **Flips.** The body-flip values live in the vault's inline rows (the `.vlt`),
+  which the trainer now finds per field by key. New Flips tab: flip speed,
+  scalar, smoothing, and the easy-mode one-flip lock (`PerfectBodyFlips`),
+  which is why easy difficulty would not multi-flip.
+- **Spin.** Measured with a scripted ollie: `EasyBodySpins` is the lever
+  (+60% air rotation); the body-spin curves and auto-spin cap change nothing.
+- **Presets stack** and were rebuilt: Never Bail, Mega Pop, Spin, Multi Flip,
+  Land Any Angle, Fast, Locked In, Big Air, Moon, THPS. Stock resets all.
+- **Values stay set.** Anything edited is re-applied every frame, frozen or
+  not, and per-difficulty edits are copied to every difficulty.
+- New values: every jump-height variant per mode, push limit, run-speed
+  curves (curve multipliers now cover 4/8/16-point graphs), landing
+  alignment, board-separation and hit tolerances.
+- The "falling min up-Y" slider is relabelled: 1 means *always* bail when
+  tilted, -1 or lower means never.
+- New `skate3_trainer_audit`: unattended in-game audit of every slider,
+  preset, saved values, game speed, marker slots and bail handling, with a
+  report file. Diagnostics: `skate3_trainer_spintest` (scripted pad +
+  rotation measurement), `skate3_trainer_watch` (Windows: which game functions
+  read a value).
+- Experimental: **Perfect finish** (flips rotate only while a grab trigger is
+  held).
+
 ## v0.2.1 — 2026-09-29
 Fixes for v0.2.0, all checked in game by the new unattended self-test.
 - **Fixed "db.big not found".** The trainer was given the app's

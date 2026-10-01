@@ -563,29 +563,80 @@ struct Preset {
 };
 
 const std::vector<Preset>& Presets() {
+  using Rules = std::vector<PresetRule>;
+  auto join = [](std::initializer_list<Rules> parts) {
+    Rules out;
+    for (const Rules& p : parts) out.insert(out.end(), p.begin(), p.end());
+    return out;
+  };
+  // Every ollie / jump height the game has, per difficulty.
+  static const Rules pop3 = {
+      {"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3},
+      {"#0F2473E9125079F0", true, 3}, {"#1B3E9F9C836D287D", true, 3}, {"#703829BD711E54DE", true, 3},
+      {"#B2B1170AFFC8AC69", true, 3}, {"#BE3F74F978D777E5", true, 3}};
+  // Bail thresholds out of reach (what other Skate 3 trainers do), tilt and
+  // bad-landing checks off, board-separation and hit tolerances raised.
+  static const Rules never_bail = {
+      {"Wipeout_AirMaxSquash", true, 1000},
+      {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000},
+      {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000},
+      {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000},
+      {"Wipeout_GroundSkeletonMaxContactArms", true, 1000},
+      {"Wipeout_OB_SkeletonMaxContact", true, 1000},
+      {"Wipeout_OB_SkeletonMaxContactArms", true, 1000},
+      {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000},
+      {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000},
+      {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000},
+      {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000},
+      {"Wipeout_GroundSkitchingContact", true, 1000},
+      {"Wipeout_GroundMaxAngularDeckError", true, 1000},
+      {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000},
+      {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000},
+      {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000},
+      {"Wipeout_AirMaxSpeedIntoStairs", true, 1000},
+      {"Wipeout_AirSkeletonMaxContact", true, 1000},
+      {"Wipeout_GroundSkeletonMaxContact", true, 1000},
+      {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000},
+      {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5},
+      {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_AirBodyFlipScalar", true, 1000},
+      {"DeckAccBodyFlipScalar", true, 1000}, {"DeckAccPlayerScalar", true, 1000},
+      {"Wipeout_AirXZTrick", true, 1000}, {"Wipeout_AirYTrick", true, 1000},
+      {"SkaterSkaterThresholdScalar", true, 1000}, {"Wipeout_GroundVehicleScalar", true, 1000},
+      {"Wipeout_OB_VehicleScalar", true, 1000}, {"Wipeout_GroundSkitchingScalar", true, 1000},
+      {"WipeoutGroundLightDMOScalar", true, 1000}, {"WipeoutAirLightDMOScalar", true, 1000},
+      {"DeckAccSkitchScalar", true, 1000}, {"DeckAccAIScalar", true, 1000}};
+  // Measured: easy body spins is the spin lever (+60% air rotation).
+  static const Rules spin = {{"EasyBodySpins", false, 1}, {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}};
+  static const Rules multi_flip = {{"PerfectBodyFlips", false, 0}, {"FlipMaxSpeed", false, 16.5},
+                                   {"FlipScalar", false, 4.375}, {"FlipSpeedSmoothingFactor", false, 1}};
+  static const Rules smooth_flip = {{"PerfectBodyFlips", false, 0}, {"FlipMaxSpeed", false, 10},
+                                    {"FlipScalar", false, 2.5}, {"FlipSpeedSmoothingFactor", false, 0.5}};
+  static const Rules any_angle = {
+      {"MaxHeadingAdjustVsUpY", false, 2}, {"MaxAllowedGroundNormalFromUp", false, 180},
+      {"DontAlignAnglePhysicsAir", false, 3.2}, {"SpeedToAlignToGround_PhysAir", true, 5},
+      {"BodyFlipMinGrabTimeFraction", false, 0}};
+  static const Rules fast = {{"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4},
+                             {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4},
+                             {"SpeedVsInput", false, 3}, {"#CE8C0D4C6B92FD27", false, 3}};
   // Presets stack: each one changes only its own values. Stock resets all.
   static const std::vector<Preset> presets = {
-      {"Stock", "Every value back to the game's own tuning", {}},
-      {"Mega Pop", "Every ollie / jump height x3", {{"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}, {"#0F2473E9125079F0", true, 3}, {"#1B3E9F9C836D287D", true, 3}, {"#703829BD711E54DE", true, 3}, {"#B2B1170AFFC8AC69", true, 3}, {"#BE3F74F978D777E5", true, 3}}},
+      {"Stock", "Everything back to the game's own tuning (also turns Never Bail off)", {}},
+      {"Never Bail", "You cannot bail: thresholds out of reach + the bail itself is blocked", never_bail},
+      {"Mega Pop", "Every ollie and jump height x3", pop3},
+      {"Spin", "Easy body spins on (+60% rotation), spin caps x3", spin},
+      {"Multi Flip", "Double / triple / quad body flips in every difficulty, fast", multi_flip},
+      {"Land Any Angle", "Crooked landings get squared up: heading auto-correct x2, align at any tilt",
+       join({any_angle, never_bail})},
+      {"Fast", "Push top speed x4, push power x4, run speed x3", fast},
+      {"Locked In", "Never Bail + Land Any Angle + easy spins + controllable multi-flips",
+       join({never_bail, any_angle, smooth_flip, {{"EasyBodySpins", false, 1}, {"MaxSpinSpeed", true, 2}}})},
+      {"Big Air", "Everything: Mega Pop + Spin + Multi Flip + Fast + Land Any Angle + Never Bail",
+       join({pop3, spin, multi_flip, fast, any_angle, never_bail})},
       {"Moon", "Pop x2.5, floaty ragdolls, higher hippy jumps",
        {{"/JumpMinHeight", true, 2.5}, {"/JumpMaxHeight", true, 2.5},
         {"physics_biped/default/JumpHeight", true, 2.5},
         {"Wipeout_AirYAcceleration", true, 0.3}, {"Wipeout_GroundYAcceleration", true, 0.3}}},
-      {"Never Bail", "Every bail threshold out of reach, bad-landing check off", {{"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_AirBodyFlipScalar", true, 1000}, {"DeckAccBodyFlipScalar", true, 1000}, {"DeckAccPlayerScalar", true, 1000}, {"Wipeout_AirXZTrick", true, 1000}, {"Wipeout_AirYTrick", true, 1000}, {"SkaterSkaterThresholdScalar", true, 1000}, {"Wipeout_GroundVehicleScalar", true, 1000}, {"Wipeout_OB_VehicleScalar", true, 1000}, {"Wipeout_GroundSkitchingScalar", true, 1000}, {"WipeoutGroundLightDMOScalar", true, 1000}, {"WipeoutAirLightDMOScalar", true, 1000}, {"DeckAccSkitchScalar", true, 1000}, {"DeckAccAIScalar", true, 1000}}},
-      {"Spin & Flip", "Easy body spins on (the real spin lever, +60%), higher spin caps", {{"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5}, {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1}, {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}}},
-      {"Multi Flip", "Double / triple flips in every difficulty: perfect-flip lock off, flip speed x3.3",
-       {{"PerfectBodyFlips", false, 0}, {"FlipMaxSpeed", false, 16.5}, {"FlipScalar", false, 4.375},
-        {"FlipSpeedSmoothingFactor", false, 1}}},
-      {"Auto Land", "Always pulled upright onto the ground, bad landings never bail",
-       {{"BodyFlipMinGrabTimeFraction", false, 0}, {"DontAlignAnglePhysicsAir", false, 3.2}, {"SpeedToAlignToGround_PhysAir", true, 5}, {"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_AirBodyFlipScalar", true, 1000}, {"DeckAccBodyFlipScalar", true, 1000}, {"DeckAccPlayerScalar", true, 1000}, {"Wipeout_AirXZTrick", true, 1000}, {"Wipeout_AirYTrick", true, 1000}, {"SkaterSkaterThresholdScalar", true, 1000}, {"Wipeout_GroundVehicleScalar", true, 1000}, {"Wipeout_OB_VehicleScalar", true, 1000}, {"Wipeout_GroundSkitchingScalar", true, 1000}, {"WipeoutGroundLightDMOScalar", true, 1000}, {"WipeoutAirLightDMOScalar", true, 1000}, {"DeckAccSkitchScalar", true, 1000}, {"DeckAccAIScalar", true, 1000}}},
-      {"Locked In", "Never bail, never lose the board, auto-land; flips and spins fast but controllable",
-       {{"PerfectBodyFlips", false, 0}, {"FlipMaxSpeed", false, 10}, {"FlipScalar", false, 2.5}, {"MaxHeadingAdjustVsUpY", false, 2}, {"MaxAllowedGroundNormalFromUp", false, 180},
-        {"FlipSpeedSmoothingFactor", false, 0.5}, {"EasyBodySpins", false, 1}, {"MaxSpinSpeed", true, 2}, {"BodyFlipMinGrabTimeFraction", false, 0}, {"DontAlignAnglePhysicsAir", false, 3.2}, {"SpeedToAlignToGround_PhysAir", true, 5}, {"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_AirBodyFlipScalar", true, 1000}, {"DeckAccBodyFlipScalar", true, 1000}, {"DeckAccPlayerScalar", true, 1000}, {"Wipeout_AirXZTrick", true, 1000}, {"Wipeout_AirYTrick", true, 1000}, {"SkaterSkaterThresholdScalar", true, 1000}, {"Wipeout_GroundVehicleScalar", true, 1000}, {"Wipeout_OB_VehicleScalar", true, 1000}, {"Wipeout_GroundSkitchingScalar", true, 1000}, {"WipeoutGroundLightDMOScalar", true, 1000}, {"WipeoutAirLightDMOScalar", true, 1000}, {"DeckAccSkitchScalar", true, 1000}, {"DeckAccAIScalar", true, 1000}}},
-      {"Land Any Angle", "Sideways or crooked landings still roll away: heading auto-correct x2, landing-angle bails off",
-       {{"MaxHeadingAdjustVsUpY", false, 2}, {"MaxAllowedGroundNormalFromUp", false, 180}, {"DontAlignAnglePhysicsAir", false, 3.2}, {"SpeedToAlignToGround_PhysAir", true, 5}, {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}}},
-      {"Fast", "Push top speed x4, push power x4, run speed x3", {{"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4}, {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4}, {"SpeedVsInput", false, 3}, {"#CE8C0D4C6B92FD27", false, 3}}},
-      {"Big Air", "Mega Pop + Spin & Flip + Multi Flip + Fast + Never Bail", {{"PerfectBodyFlips", false, 0}, {"FlipSpeedSmoothingFactor", false, 1}, {"/JumpMinHeight", true, 3}, {"/JumpMaxHeight", true, 3}, {"AbsoluteMinHeight", true, 3}, {"#0F2473E9125079F0", true, 3}, {"#1B3E9F9C836D287D", true, 3}, {"#703829BD711E54DE", true, 3}, {"#B2B1170AFFC8AC69", true, 3}, {"#BE3F74F978D777E5", true, 3}, {"PropBodySpinVsTime", false, 2.5}, {"#D7C6855B7814D048", false, 2.5}, {"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1}, {"FlipMaxSpeed", true, 3}, {"FlipScalar", true, 2}, {"MaxPushableSpeed", true, 4}, {"#501D5581043D7D3C", true, 4}, {"MaxPushDVStart", true, 4}, {"MaxPushDVEnd", true, 4}, {"SpeedVsInput", false, 3}, {"#CE8C0D4C6B92FD27", false, 3}, {"Wipeout_AirMaxSquash", true, 1000}, {"Wipeout_AirMaxSpeedIntoCollisionNearGrind", true, 1000}, {"Wipeout_GroundMaxSquashCoffin", true, 1000}, {"Wipeout_GroundMaxSquash", true, 1000}, {"Wipeout_OB_MaxSquash", true, 1000}, {"Wipeout_AirSkeletonMaxContactArms", true, 1000}, {"Wipeout_GroundSkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_SkeletonMaxContact", true, 1000}, {"Wipeout_OB_SkeletonMaxContactArms", true, 1000}, {"Wipeout_OB_Air_SkelMaxContact", true, 1000}, {"Wipeout_AirSkeletonMaxDisp", true, 1000}, {"Wipeout_GroundSkeletonMaxDisp", true, 1000}, {"Wipeout_OB_SkeletonMaxDisp", true, 1000}, {"Wipeout_OB_Air_SkelMaxDisp", true, 1000}, {"Wipeout_GroundBalanceBase", true, 1000}, {"Wipeout_GroundOpposingContact", true, 1000}, {"Wipeout_OB_VehicleContact", true, 1000}, {"Wipeout_GroundSkitchingContact", true, 1000}, {"Wipeout_GroundMaxAngularDeckError", true, 1000}, {"Wipeout_GroundLeanContactYThresh", true, 1000}, {"#EE81DD78506E4A2D", true, 1000}, {"#F784AC3BA4422FFD", true, 1000}, {"#C7DDE25FF0D72DA0", true, 1000}, {"#9F1C2EF30C749332", true, 1000}, {"Wipeout_AirMaxSpeedIntoGround", true, 1000}, {"Wipeout_AirMaxSpeedIntoStairs", true, 1000}, {"Wipeout_AirSkeletonMaxContact", true, 1000}, {"Wipeout_GroundSkeletonMaxContact", true, 1000}, {"Wipeout_GroundBalanceTotal", true, 1000}, {"Wipeout_GroundVehicleContact", true, 1000}, {"Wipeout_AirFallingMinUpY", false, -5}, {"Wipeout_AirFallingMaxAngle", false, -5}, {"WipeoutCheckForBadLanding", false, 0}, {"Wipeout_AirBodyFlipScalar", true, 1000}, {"DeckAccBodyFlipScalar", true, 1000}, {"DeckAccPlayerScalar", true, 1000}, {"Wipeout_AirXZTrick", true, 1000}, {"Wipeout_AirYTrick", true, 1000}, {"SkaterSkaterThresholdScalar", true, 1000}, {"Wipeout_GroundVehicleScalar", true, 1000}, {"Wipeout_OB_VehicleScalar", true, 1000}, {"Wipeout_GroundSkitchingScalar", true, 1000}, {"WipeoutGroundLightDMOScalar", true, 1000}, {"WipeoutAirLightDMOScalar", true, 1000}, {"DeckAccSkitchScalar", true, 1000}, {"DeckAccAIScalar", true, 1000}}},
-      {"THPS", "Fast spins, easy body spins, auto push",
+      {"THPS", "Arcade: easy fast spins, auto push, push speed x2",
        {{"MaxSpinSpeed", true, 3}, {"MaxAutoBodySpinSpeed", true, 3}, {"EasyBodySpins", false, 1},
         {"AutoPushEnabled", false, 1}, {"MaxPushableSpeed", true, 2}}},
   };
@@ -599,7 +650,8 @@ void ApplyPresetLocked(const Preset& preset) {
     practice::SetNeverBail(false);
     SaveOptions();
   }
-  if (std::string(preset.name) == "Locked In" || std::string(preset.name) == "Never Bail") {
+  if (const std::string name = preset.name; name == "Locked In" || name == "Never Bail" ||
+                                            name == "Big Air" || name == "Land Any Angle") {
     practice::SetNeverBail(true);
     SaveOptions();
   }
@@ -1032,6 +1084,7 @@ void Audit() {
   static std::vector<double> test_values;
   static std::string user_backup;
   static bool had_user = false;
+  static bool had_never_bail = false;
   static size_t preset_index = 0;
   static size_t speed_index = 0;
   static std::set<int32_t> states_seen;
@@ -1077,6 +1130,7 @@ void Audit() {
         REXLOG_INFO("trainer audit: start - {} | {} entries", g_status, g_entries.size());
         std::error_code ec;
         had_user = std::filesystem::exists(UserPath(), ec);
+        had_never_bail = pr::NeverBail();
         if (had_user) {
           std::ifstream in(UserPath());
           user_backup.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
@@ -1369,6 +1423,8 @@ void Audit() {
           std::filesystem::remove(UserPath(), ec);
         }
         if (REXCVAR_GET(skate3_trainer_apply_saved) && had_user) ApplySavedLocked(blob);
+        pr::SetNeverBail(had_never_bail);
+        SaveOptions();
       }
       int pass = 0;
       std::string report = "SK8TRAINER audit\n";

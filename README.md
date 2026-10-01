@@ -51,20 +51,37 @@ button is on by default on Android and iOS (`skate3_trainer_button`).
 
 ## What's in it
 
-**Physics tabs** (Pop & Jump, Gravity & Speed, Spin, Bails, World). Every value is
-the game's own AttribSys tuning, edited live:
-- ollie min/max height for each difficulty mode (normal / easy / hardcore /
-  motorized), pop bonus, hippy-jump height
-- slope gravity, push speed, auto push, pump
-- air spin speed, auto body-spin speed, easy body spins
-- bail thresholds (landing speed into ground or stairs, contact, balance),
-  ragdoll gravity, the delay before the game resets you after a bail
+**Physics tabs** (Pop & Jump, Gravity & Speed, Spin, Flips, Bails, World): 178
+values, every one the game's own AttribSys tuning, edited live:
+- every ollie / jump height for each difficulty mode, pop bonus, hippy and
+  off-board jump height
+- slope gravity, push top speed and power, run speed, auto push, pump
+- easy body spins (the real spin lever: +60% air rotation, measured), spin caps
+- body-flip speed and the one-flip lock ("perfect body flips"), landing
+  alignment
+- every bail threshold, board-separation and hit tolerances, ragdoll gravity,
+  the delay before the game resets you after a bail
 - slow-motion tuning
 
-Any value can be **frozen** (rewritten every frame) or reset to stock. Your
-changes are saved to `<user data>/trainer/user.toml` and come back next launch.
+An edit to a per-difficulty value is copied to every difficulty, so your tuning
+survives a difficulty change.
 
-**Presets:** Stock, Mega Pop, Moon, No Bail, THPS.
+Anything you change stays set (the trainer re-applies it every frame) until you
+reset it to stock. Your changes are saved to `<user data>/trainer/user.toml` and come back next launch.
+
+**Presets** stack, so you can combine them; Stock resets everything.
+
+| Preset | What it does |
+|---|---|
+| **Never Bail** | You cannot bail. Thresholds out of reach, plus the bail itself is blocked |
+| **Mega Pop** | Every ollie and jump height x3 |
+| **Spin** | Easy body spins on, spin caps x3 |
+| **Multi Flip** | Double / triple / quad body flips in every difficulty |
+| **Land Any Angle** | Crooked landings get squared up and roll away |
+| **Fast** | Push top speed x4, push power x4, run speed x3 |
+| **Locked In** | Never Bail + Land Any Angle + easy spins + controllable multi-flips |
+| **Big Air** | All of the above at once |
+| **Moon**, **THPS** | Floaty low-gravity feel; arcade spins and auto push |
 
 **Practice tab**
 - **Game speed** 0.05x to 2x. It scales the sim tick rate, the same thing the
@@ -74,6 +91,13 @@ changes are saved to `<user data>/trainer/user.toml` and come back next launch.
   position write. Placing a marker the normal way (LB + d-pad down) can also fill
   the selected slot.
 - **Auto-return after a bail**, with an adjustable delay.
+- **NEVER BAIL** checkbox (remembered between launches). It works on three
+  levels: bail thresholds out of reach, detected bails dropped, and the skater's
+  state machine not allowed to enter the bail state. AI skaters still fall.
+  If the game demands a bail on every tick for 2 s, it is let through so you can
+  never get stuck.
+- **Perfect finish** (experimental): flips rotate only while a grab trigger is
+  held.
 
 ## Installing it in a recomp build
 
@@ -92,8 +116,9 @@ builds for: Windows, Linux and Steam Deck, macOS, Android and iOS.
 
 Platform status:
 - **Windows x64:** built and checked in game with the self-test: the vault is
-  found (81/81 stock values), a live edit reads back, 0.5x speed halves the
-  sim rate (60 → 30 updates/s), and marker save and go both work.
+  found (178/178 stock values) and the unattended audit passes: every slider
+  writes, holds and restores, every preset applies exactly, saved values round
+  trip, game speed, all marker-slot actions, forced bail + auto-return.
 - **Linux, Steam Deck, macOS, Android, iOS:** the code only uses the runtime's
   portable APIs: the guest heap table for memory, the runtime input system for
   the pad, and ImGui. It has not been built on those platforms yet. Please open
