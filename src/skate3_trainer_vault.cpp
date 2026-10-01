@@ -199,8 +199,12 @@ struct Curated {
   const char* field;  // name, or "#<16 hex digits>" for an unnamed field
   double min, max;
   char kind = 'v';    // 'v' value, 'g' curve multiplier (y values x N)
+  // >= 0: one float this many bytes into the field's data (a component of a
+  // vector / colour / curve, or an element of an array the field points to).
+  int sub = -1;
 };
 
+// A name, or "#<16 hex digits>" for one we cannot name.
 uint64_t FieldKey(const char* field) {
   return field[0] == '#' ? std::strtoull(field + 1, nullptr, 16) : Hash64(field);
 }
@@ -301,10 +305,12 @@ constexpr Curated kCurated[] = {
     {"Landing: align-to-ground max angle", "Flips", "physics_airstates", "default", "DontAlignAnglePhysicsAir", 0, 4},
     {"Landing: align-to-ground speed", "Flips", "physics_airstates", "default", "SpeedToAlignToGround_PhysAir", 0, 5},
     {"Slow-mo fps at scale 1", "World", "slowmotion_controller", "default", "fps_at_scale_one", 1, 240},
+#include "skate3_trainer_curated.inc"
 };
 
 // Collection keys we can name (physics_mode difficulty presets etc.).
-constexpr const char* kKnownKeys[] = {"default", "normal", "test", "motorized", "easy", "hardcore"};
+constexpr const char* kKnownKeys[] = {"default", "normal", "test", "motorized", "easy", "hardcore",
+                                      "swan_dive", "torpedo", "judo_kick", "cannon_ball", "free_fall"};
 
 std::string KeyName(uint64_t key) {
   for (const char* k : kKnownKeys) {
@@ -378,15 +384,21 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
     }
 
     for (const Curated& c : kCurated) {
-      const uint64_t cls = Hash64(c.cls), fkey = FieldKey(c.field);
+      const uint64_t cls = FieldKey(c.cls), fkey = FieldKey(c.field);
       auto ci = classes.find(cls);
       if (ci == classes.end()) continue;
       auto fi = ci->second.find(fkey);
       if (fi == ci->second.end()) continue;
       const SchemaField& f = fi->second;
       const bool layout_field = (f.flags & 2) != 0;
+      // Data too big for an inline row (vectors, curves, arrays) sits in the
+      // .bin, pointed to by the row.
+      const bool pointed = !layout_field && (f.size > 4 || (f.flags & 1));
       Type type;
-      if (c.kind == 'g') {
+      if (c.sub >= 0) {
+        if (!pointed && uint32_t(c.sub) + 4 > f.size) continue;
+        type = Type::kF32;
+      } else if (c.kind == 'g') {
         // PointNegGraphData8 (80 bytes): xmin ymin xmax ymax, x[8], y[8].
         // PointGraphData8 (64 bytes): x[8], y[8].
         // PointNegGraphDataN is 16 + 8N bytes (N = 4, 8, 16).
@@ -397,9 +409,9 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
       else if (f.type == Hash64("EA::Reflection::Int32")) type = Type::kI32;
       else if (f.type == Hash64("EA::Reflection::UInt32")) type = Type::kU32;
       else continue;
-      if (!layout_field && (f.size > 4 || (f.flags & 1))) continue;  // inline scalars only
+      if (pointed && c.sub < 0) continue;  // whole-field edits: scalars only
       for (const auto& [ck, col] : layouts) {
-        if (ck.first != cls || (c.key && ck.second != Hash64(c.key))) continue;
+        if (ck.first != cls || (c.key && ck.second != FieldKey(c.key))) continue;
         Field out;
         const Bytes* raw = &raw_cb;
         if (layout_field) {
@@ -407,6 +419,16 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
           out.blob = kBin;
           out.offset = col.layout + f.offset;
           if (out.offset + f.size > raw_cb.size() || slots.count(out.offset)) continue;
+        } else if (pointed) {
+          uint32_t row = 0;
+          for (uint32_t k = 0; k < col.count && !row; ++k) {
+            const uint32_t pos = col.entries + k * 16;
+            if (pos + 16 <= cv.size() && U64(cv, pos) == fkey) row = pos + 8;
+          }
+          if (!row || !vslots.count(row)) continue;  // must be a real pointer
+          out.blob = kBin;
+          out.offset = U32(cv, row);  // file-relative after LoadVault
+          if (!out.offset) continue;
         } else {
           // Inline: find this field's entry; its value is the entry's last 4 bytes.
           uint32_t at = 0;
@@ -422,7 +444,12 @@ Table BuildFromGame(const std::filesystem::path& game_root) {
         }
         out.label = c.key ? c.label : std::string(c.label) + " [" + KeyName(ck.second) + "]";
         out.group = c.group;
-        out.source = std::string(c.cls) + "/" + KeyName(ck.second) + "/" + c.field;
+        out.source = std::string(c.cls) + "/" + (c.key ? std::string(c.key) : KeyName(ck.second)) + "/" + c.field;
+        if (c.sub >= 0) {
+          out.offset += uint32_t(c.sub);
+          out.source += "+" + std::to_string(c.sub);
+          if (uint64_t(out.offset) + 4 > raw_cb.size() || slots.count(out.offset)) continue;
+        }
         out.type = type;
         out.min = c.min;
         out.max = c.max;
