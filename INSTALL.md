@@ -22,7 +22,7 @@ You need your own copy of **Skate 3 for Xbox 360** (a disc image / ISO) and
    [Releases](https://github.com/andrewnakas/sk8trainer/releases/latest).
    Optionally, check it against `SHA256SUMS`:
    ```powershell
-   Get-FileHash .\sk8trainer-0.3.0-windows-x86_64.zip -Algorithm SHA256
+   Get-FileHash .\sk8trainer-0.5.0-windows-x86_64.zip -Algorithm SHA256
    ```
 2. Unzip it into a folder you can write to, such as `Documents\Skate3`. Avoid
    `Program Files`.

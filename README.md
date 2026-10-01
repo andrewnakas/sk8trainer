@@ -112,6 +112,11 @@ holding their values, not yet for feel.
   position write. Placing a marker the normal way (LB + d-pad down) can also fill
   the selected slot.
 - **Auto-return after a bail**, with an adjustable delay.
+- **No air timer**: the game puts the skater back after 5 s in the air. With
+  this on it does not, so big-pop and low-gravity airs come down and land.
+- **No out of bounds**: the game puts the skater back when they stand on an
+  out-of-bounds surface. With this on you can skate there. Places with no
+  ground at all still drop you out of the world.
 - **NEVER BAIL** checkbox (remembered between launches). It works on three
   levels: bail thresholds out of reach, detected bails dropped, and the skater's
   state machine not allowed to enter the bail state. AI skaters still fall.
@@ -147,7 +152,7 @@ builds for: Windows, Linux and Steam Deck, macOS, Android and iOS.
 
 Platform status:
 - **Windows x64:** built and checked in game with the self-test: the vault is
-  found (178/178 stock values) and the unattended audit passes: every slider
+  found (405 values) and the unattended audit passes: every slider
   writes, holds and restores, every preset applies exactly, saved values round
   trip, game speed, all marker-slot actions, forced bail + auto-return.
 - **Linux, Steam Deck, macOS, Android, iOS:** the code only uses the runtime's

@@ -13,7 +13,7 @@ After the `skate3` target exists (after `add_executable` / `add_library`):
 ```cmake
 option(SKATE3_TRAINER "Build the SK8TRAINER in-game trainer" ON)
 set(SKATE3_TRAINER_DIR "" CACHE PATH "Local SK8TRAINER checkout (empty = fetch from GitHub)")
-set(SKATE3_TRAINER_TAG "v0.3.0" CACHE STRING "SK8TRAINER git tag to fetch")
+set(SKATE3_TRAINER_TAG "v0.5.0" CACHE STRING "SK8TRAINER git tag to fetch")
 if(SKATE3_TRAINER)
     if(NOT SKATE3_TRAINER_DIR)
         include(FetchContent)
@@ -124,7 +124,7 @@ extern "C" REX_FUNC(sub_82B82E08) {
 
 ## 4. Check for hook clashes
 
-The trainer defines strong overrides for seven lifted functions. A lifted
+The trainer defines strong overrides for ten lifted functions. A lifted
 function can only have one strong override, so make sure your fork doesn't
 already override these:
 
@@ -133,7 +133,10 @@ already override these:
 | `sub_82966910` | sim timer: set tick frequency | game speed |
 | `sub_82898FC8` | `PlayerUI::UpdateSessionMarker` | marker slots, auto-return |
 | `sub_8255DF90` | input action query (bool) | forcing set/return inside the marker update only |
-| `sub_82D8ADE8` | skater state machine: decide next state | Never bail (state 300 refused) |
+| `sub_82966908` | timer thread: "run one sim tick" signal | pause / frame step |
+| `sub_82D8ADE8` | skater state machine: decide next state | Never bail (state 300 refused); No air timer (airborne tick counter held) |
+| `sub_82DB80C8` | skater component: surface-kind flags (6 = out of bounds) | No out of bounds |
+| `sub_82DB8120` | its caller (per-state surface check) | diagnostic log only |
 | `sub_82D86DE8` | bail detection hand-off | Never bail (detected bails dropped) |
 | `sub_82592390` | entity "wipe out from this point" command | Never bail (hits ignored) |
 | `sub_82EE22C0` | `XInputGetState` wrapper | grab triggers for Perfect finish; scripted pad for the diagnostics |

@@ -841,7 +841,9 @@ void SaveOptions() {
   std::ofstream(OptionsPath()) << "never_bail=" << (practice::NeverBail() ? 1 : 0) << std::endl
 
                                << "keep_feet_on=" << (practice::KeepFeetOn() ? 1 : 0) << std::endl
-                               << "recover=" << (practice::Recover() ? 1 : 0) << std::endl;
+                               << "recover=" << (practice::Recover() ? 1 : 0) << std::endl
+                               << "no_air_timer=" << (practice::NoAirTimer() ? 1 : 0) << std::endl
+                               << "no_bounds=" << (practice::NoBounds() ? 1 : 0) << std::endl;
 }
 void LoadOptions() {
   std::ifstream in(OptionsPath());
@@ -850,6 +852,8 @@ void LoadOptions() {
     if (line.rfind("never_bail=", 0) == 0) practice::SetNeverBail(line.size() > 11 && line[11] == '1');
     if (line.rfind("keep_feet_on=", 0) == 0) practice::SetKeepFeetOn(line.size() > 13 && line[13] == '1');
     if (line.rfind("recover=", 0) == 0) practice::SetRecover(line.size() > 8 && line[8] == '1');
+    if (line.rfind("no_bounds=", 0) == 0) practice::SetNoBounds(line.size() > 10 && line[10] == '1');
+    if (line.rfind("no_air_timer=", 0) == 0) practice::SetNoAirTimer(line.size() > 13 && line[13] == '1');
   }
 }
 
@@ -1041,8 +1045,16 @@ void DrawPracticeLocked(int pad_row) {
     if (ImGui::SmallButton("Step 10")) pr::Step(10);
     ImGui::SameLine();
     if (ImGui::SmallButton("Bail now")) pr::BailNow();
+    bool no_air_timer = pr::NoAirTimer();
+    if (ImGui::Checkbox("No air timer (stay in the air as long as you like)", &no_air_timer)) {
+      pr::SetNoAirTimer(no_air_timer);
+      SaveOptions();
+    }
     bool no_bounds = pr::NoBounds();
-    if (ImGui::Checkbox("Ignore out-of-bounds signals (experimental, untested)", &no_bounds)) pr::SetNoBounds(no_bounds);
+    if (ImGui::Checkbox("No out of bounds (skate where the game would put you back)", &no_bounds)) {
+      pr::SetNoBounds(no_bounds);
+      SaveOptions();
+    }
     if (st.have_position) {
       ImGui::Text("Position %.1f, %.1f, %.1f    Speed %.1f m/s (%.0f km/h)", st.x, st.y, st.z, st.speed,
                   st.speed * 3.6f);
@@ -1789,8 +1801,9 @@ void SpinTest() {
         }
       }
       if (trial > 0) pr::GoTo(0);
-      pr::SetNeverBail(true);
+      pr::SetNeverBail(std::strstr(trials[trial].name, "bailok") == nullptr);
       pr::SetKeepFeetOn(std::strstr(trials[trial].name, "feet") != nullptr);
+      pr::SetNoAirTimer(std::strstr(trials[trial].name, "noairtimer") != nullptr);
       next(2);
       break;
     case 2:  // settle, then crouch (right stick down)
@@ -1820,7 +1833,7 @@ void SpinTest() {
       break;
     case 5: {  // through the air and the landing
       if (std::strstr(trials[trial].name, "release") && t == 170) pr::DebugSetPad(true, 0, 0, 0, 0);
-      if (t < (std::strstr(trials[trial].name, "verylong") ? 2700u : std::strstr(trials[trial].name, "long") ? 600u : 300u)) break;
+      if (t < (std::strstr(trials[trial].name, "bigair") ? 900u : std::strstr(trials[trial].name, "verylong") ? 2700u :std::strstr(trials[trial].name, "long") ? 600u : 300u)) break;
       const pr::Measure m = pr::DebugMeasure();
       REXLOG_INFO("trainer spintest: {:28} AIR yaw {:8.1f} tumble {:7.1f} | all yaw {:8.1f} tumble {:7.1f}  rise {:5.2f} m  top {:5.1f} m/s  air {:3}/{} ticks  tracking {}  bails blocked {}  states{}",
                   trials[trial].name, m.air_yaw, m.air_tumble, m.yaw_total, m.tumble_total, m.max_rise, m.max_speed, m.air_ticks, m.ticks, m.tracking, st.bails_blocked, m.states);
@@ -1834,13 +1847,16 @@ void SpinTest() {
   }
 }
 
-// Developer diagnostic (skate3_trainer_probe): teleport far outside the map
-// twice, first with the bounds on, then with them off, and log what happens.
+// Developer diagnostic (skate3_trainer_probe): teleport to a spot the game
+// treats as out of bounds (1 km +z of the demo spawn), first with the bounds
+// on, then with them off, and log what happens.
 void GravityProbe() {
   namespace pr = practice;
-  static int step = 0;
+  static int step = 0, trial = 0;
   static uint64_t tick0 = 0;
   static float home[3] = {};
+  static const float dist[] = {150, 400, 1000, 2500};
+  static const float dir[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
   const pr::Status st = pr::GetStatus();
   const uint64_t t = st.marker_updates - tick0;
   auto next = [&](int n) {
@@ -1852,33 +1868,41 @@ void GravityProbe() {
       if (!g_blob.load() || !st.marker_seen || !st.have_position || t < 300) break;
       home[0] = st.x, home[1] = st.y, home[2] = st.z;
       pr::SetAutoCapture(false);
+      pr::SetNeverBail(true);
       pr::SaveHere(0);
+      // pr::DebugWatchResetFlag();  // crashed the run at the third teleport
       next(1);
       break;
-    case 1:
-    case 3:
-      if (t < 120) break;
-      pr::SetNoBounds(step == 3);
-      REXLOG_INFO("trainer probe: teleporting 1500 m out, bounds {}", step == 3 ? "OFF" : "on");
-      pr::SetSlotPosition(1, home[0] + 1500.0f, home[1] + 30.0f, home[2]);
+    case 1: {
+      if (t < 240) break;
+      if (trial >= 2) {
+        watch::Report();
+        REXLOG_INFO("trainer probe: done");
+        next(99);
+        break;
+      }
+      const float x = home[0], z = home[2] + 1000.0f;
+      pr::SetNoBounds(trial == 1);
+      REXLOG_INFO("trainer probe: trial {} teleport to {:.0f}, {:.0f}, {:.0f} (state {})", trial, x, home[1] + 15.0f, z,
+                  st.player_state);
+      pr::SetSlotPosition(1, x, home[1] + 15.0f, z);
       pr::GoTo(1);
-      next(step + 1);
+      next(2);
       break;
+    }
     case 2:
-    case 4:
-      if (t % 120 == 0 && t > 0) {
-        REXLOG_INFO("trainer probe: t {:.0f}s state {} at {:.0f}, {:.0f}, {:.0f} ignored {}", t / 60.0, st.player_state,
-                    st.x, st.y, st.z, st.bounds_ignored);
+      if (t % 90 == 0 && t > 0) {
+        REXLOG_INFO("trainer probe: t {:.1f}s state {} at {:.1f}, {:.1f}, {:.1f} ({:.1f} m/s) ignored {}", t / 60.0, st.player_state,
+                    st.x, st.y, st.z, st.speed, st.bounds_ignored);
       }
       if (t < 900) break;
-      pr::GoTo(0);
-      next(step + 1);
-      break;
-    case 5:
-      if (t < 300) break;
       pr::SetNoBounds(false);
-      REXLOG_INFO("trainer probe: done");
-      next(99);
+      REXLOG_INFO("trainer probe: trial {} ends state {} at {:.0f}, {:.0f}, {:.0f}", trial, st.player_state, st.x, st.y,
+                  st.z);
+      watch::Report();
+      ++trial;
+      pr::GoTo(0);
+      next(1);
       break;
     default:
       break;

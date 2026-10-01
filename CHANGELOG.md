@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased (v0.4.0)
+## v0.5.0 — 2026-10-01
+No air timer, no out of bounds, and everything that was being prepared as
+v0.4.0 (never released on its own).
+
 Everything the other Skate 3 trainers and cheat tables offer that lives in the
 vault, plus practice tools. 405 values (was 178).
 - **Survey.** Every other Skate 3 trainer, cheat table and patch set that could
@@ -24,6 +27,14 @@ vault, plus practice tools. 405 values (was 178).
   lowers the real gravity.
 - **Practice**: pause and frame step (End / Shift+End), Bail now, position and
   speed readout, teleport to coordinates.
+- **No air timer** (Practice tab, off by default, saved): the game resets the
+  skater after 5 s in the air (a tick counter in the state machine,
+  `sub_82D8ADE8`, limit 300). With the option on the counter never gets there,
+  so big-pop / low-gravity airs come down and land where they fall.
+- **No out of bounds** (Practice tab, off by default, saved): the game puts the
+  skater back when they stand on an out-of-bounds surface (surface kind 6,
+  `sub_82DB80C8`). With the option on that request is dropped, so you can
+  skate there. Places with no ground at all still drop you out of the world.
 - **Never Bail** no longer leaves the skater "running" on the board:
   - a push button held in the air (foot off for a footplant) is ignored while
     airborne (option, on by default);

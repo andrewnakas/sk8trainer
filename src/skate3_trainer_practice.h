@@ -29,6 +29,7 @@ struct Status {
   int bails_blocked = 0;        // bail transitions refused by Never bail
   int feet_kept = 0;            // airs in which a push button was ignored (feet stay on)
   int rescues = 0;              // times Never bail put the skater back to riding from a bail-out pose
+  int air_timer_held = 0;       // times the 5 s air counter was wound back (no air timer)
   int bounds_ignored = 0;       // out-of-bounds signals ignored
   int auto_returns = 0;         // times a bail triggered auto-return
   bool restore_pending = false;
@@ -80,6 +81,11 @@ struct Measure {
 // state (300).
 void SetNeverBail(bool on);
 bool NeverBail();
+// No air timer: the game puts the skater back at a safe spot after 5 s in the
+// air; with this on it does not.
+void DebugWatchResetFlag();  // diagnostic: guard-page watch on the reset flag
+void SetNoAirTimer(bool on);
+bool NoAirTimer();
 // Skate / walk out of bounds: the "left the play area" respawn is not raised.
 void SetNoBounds(bool on);
 bool NoBounds();

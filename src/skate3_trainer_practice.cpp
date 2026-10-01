@@ -17,6 +17,7 @@
 //    (actor+44); state id = [[B+28]+16] (300 = WipeoutGround).
 
 #include "skate3_trainer_practice.h"
+#include "skate3_trainer_watch.h"
 
 #include <algorithm>
 #include <array>
@@ -89,6 +90,14 @@ float g_position[3] = {};
 // area" flags on the skater's state object (bytes 65 and 69), which lead to
 // the fade and respawn. With this on they are not raised for the local skater.
 bool g_no_bounds = false;
+
+// Air timer: the state decider (sub_82D8ADE8) counts airborne ticks at
+// [self+44]; past 300 (5 s) it raises byte [self+57], which becomes the reset
+// state 702. With this on, the local skater's counter is wound back before it
+// gets there.
+bool g_no_air_timer = false;
+bool g_watch_reset = false;
+constexpr uint32_t kAirTimerWrap = 200;
 
 // Scripted pad (spin test).
 struct TestPad {
@@ -447,6 +456,10 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
     }
   }
 
+  if (g_watch_reset && g_local_state) {
+    g_watch_reset = false;
+    skate3::trainer::watch::Arm({{"reset flag", base + g_local_state + 69, 1}});
+  }
   if (g_pending_goto >= 0) {
     const SlotData& s = g_slots[g_pending_goto];
     if (s.valid && g_status.use_gate) {
@@ -643,6 +656,18 @@ void DebugSetPad(bool active, float lx, float ly, float rx, float ry, uint16_t b
 void SetNeverBail(bool on) {
   std::lock_guard lock(g_mutex);
   g_never_bail = on;
+}
+void DebugWatchResetFlag() {
+  std::lock_guard lock(g_mutex);
+  g_watch_reset = true;
+}
+void SetNoAirTimer(bool on) {
+  std::lock_guard lock(g_mutex);
+  g_no_air_timer = on;
+}
+bool NoAirTimer() {
+  std::lock_guard lock(g_mutex);
+  return g_no_air_timer;
 }
 void SetNoBounds(bool on) {
   std::lock_guard lock(g_mutex);
@@ -874,6 +899,32 @@ extern "C" REX_FUNC(sub_82DB80C8) {
   __imp__sub_82DB80C8(ctx, base);
 }
 
+// The caller of sub_82DB80C8: per state, it passes the kind of surface under
+// the skater ([[component+1800]+24]+16; 6 = out of bounds) and, in the bail
+// state, raises the same reset flag from byte +214 of that object. Diagnostic
+// only: logs when it asks for a reset of the local skater.
+extern "C" REX_FUNC(__imp__sub_82DB8120);
+extern "C" REX_FUNC(sub_82DB8120) {
+  const uint32_t component = ctx.r3.u32;
+  uint32_t state = 0;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_local_state && GuestReadable(component + 1800, 4)) {
+      const uint32_t holder = REX_LOAD_U32(component + 1800);
+      if (GuestReadable(holder + 28, 4) && REX_LOAD_U32(holder + 28) == g_local_state &&
+          GuestReadable(g_local_state + 69, 1) && REX_LOAD_U8(g_local_state + 69) == 0) {
+        state = g_local_state;
+      }
+    }
+  }
+  __imp__sub_82DB8120(ctx, base);
+  if (state && REX_LOAD_U8(state + 69) != 0) {
+    std::lock_guard lock(g_mutex);
+    REXLOG_INFO("trainer: reset asked for by the surface check (state {}) at {:.1f}, {:.1f}, {:.1f}", g_status.player_state,
+                g_status.x, g_status.y, g_status.z);
+  }
+}
+
 // PlayerUI::UpdateSessionMarker.
 extern "C" REX_FUNC(sub_82898FC8) {
   const uint32_t self = ctx.r3.u32;
@@ -896,7 +947,14 @@ extern "C" REX_FUNC(sub_82D8ADE8) {
   bool on;
   {
     std::lock_guard lock(g_mutex);
-    on = g_never_bail && current != 300 && GuestReadable(self + 4, 4) && IsLocalBody(base, REX_LOAD_U32(self + 4));
+    const bool local = GuestReadable(self + 4, 4) && IsLocalBody(base, REX_LOAD_U32(self + 4));
+    on = g_never_bail && current != 300 && local;
+    if (g_no_air_timer && local && GuestReadable(self + 44, 4) && REX_LOAD_U32(self + 44) >= kAirTimerWrap) {
+      REX_STORE_U32(self + 44, 1);
+      ++g_status.air_timer_held;
+      REXLOG_INFO("trainer: no air timer - wound the game's air counter back ({} times, state {}, y {:.1f})",
+                  g_status.air_timer_held, current, g_status.y);
+    }
   }
   bool requested = false;
   if (on && GuestReadable(self + 4, 4)) {
