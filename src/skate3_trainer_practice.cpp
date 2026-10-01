@@ -210,6 +210,11 @@ void BeforeMarkerUpdate(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t 
   g_status.use_gate = REX_LOAD_U8(marker + kMarkerUseGate) != 0;
 
   if (g_measure_on && !g_auto_return) g_status.player_state = LocalPlayerState(ctx, base, self);
+  if (g_never_bail && g_last_actor && GuestReadable(g_last_actor + 1904, 4)) {
+    // Drop a wipeout command that is already latched on the local skater.
+    const uint32_t cmd = REX_LOAD_U32(g_last_actor + 1904);
+    if (cmd & 0x40000000u) REX_STORE_U32(g_last_actor + 1904, cmd & ~0x40000000u);
+  }
   {
     // State timeline (cheap): one log line per change.
     static int32_t last_state = -2;
@@ -682,6 +687,23 @@ extern "C" REX_FUNC(sub_82D86DE8) {
     }
   }
   __imp__sub_82D86DE8(ctx, base);
+}
+
+// Entity-level "wipe out, pushed from this point" request (hit by a skater,
+// a car, losing the board...): stores the push direction and raises bit
+// 0x40000000 of [actor+1904], which the physics re-reads every tick. With
+// Never bail on, the local skater ignores it.
+extern "C" REX_FUNC(__imp__sub_82592390);
+extern "C" REX_FUNC(sub_82592390) {
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_never_bail && g_last_actor && ctx.r3.u32 == g_last_actor) {
+      ++g_status.bails_blocked;
+      REXLOG_INFO("trainer: never bail - ignored a wipeout command (state {})", g_status.player_state);
+      return;
+    }
+  }
+  __imp__sub_82592390(ctx, base);
 }
 
 // XInputGetState(user, state*) wrapper: scripted pad for the spin test.
